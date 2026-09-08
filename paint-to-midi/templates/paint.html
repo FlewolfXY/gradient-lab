@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>paint→MIDI · 画布召唤台</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='paint.css') }}">
+</head>
+<body>
+<div class="page">
+  <header class="hero">
+    <h1>画布召唤台</h1>
+    <p class="sub">选一幅画，选一种读法。涟漪模式下<b>点画上任何位置</b>，音乐就从那里荡开。</p>
+  </header>
+
+  <div class="layout">
+    <section class="canvas-side">
+      <div class="canvas-wrap" id="canvasWrap">
+        <img id="painting" src="" alt="">
+        <canvas id="overlay"></canvas>
+        <div class="canvas-hint" id="canvasHint">← 先从右边选一幅画</div>
+      </div>
+      <div class="transport">
+        <button id="playBtn" class="big-btn" disabled>▶ 播放</button>
+        <span id="nowChord" class="now-chord"></span>
+        <span id="keyReadout" class="key-readout"></span>
+      </div>
+    </section>
+
+    <aside class="controls">
+      <h2>画</h2>
+      <div class="gallery" id="gallery">
+        {% for p in paintings %}
+        <button class="thumb" data-name="{{ p }}"><img src="/painting/{{ p }}" alt="{{ p }}"><span>{{ p }}</span></button>
+        {% endfor %}
+      </div>
+      <label class="upload-btn">上传新画<input type="file" id="uploadInput" accept="image/*" hidden></label>
+
+      <h2>读法</h2>
+      <div class="btn-row">
+        <button class="opt scan-btn active" data-scan="lr">左 → 右</button>
+        <button class="opt scan-btn" data-scan="tb">上 → 下</button>
+        <button class="opt scan-btn" data-scan="ripple">涟漪 ◉</button>
+      </div>
+      <p class="tip" id="rippleTip" hidden>点画上任意位置设置涟漪中心（默认在最亮处）</p>
+
+      <h2>参数</h2>
+      <div class="param-row"><span>速度</span>
+        <input type="range" id="tempoSlider" min="50" max="120" value="80">
+        <b id="tempoVal">80</b>
+      </div>
+      <div class="param-row"><span>调式</span>
+        <div class="btn-row">
+          <button class="opt mode-btn active" data-mode="">听画的</button>
+          <button class="opt mode-btn" data-mode="major">大调</button>
+          <button class="opt mode-btn" data-mode="minor">小调</button>
+        </div>
+      </div>
+      <div class="param-row"><span>种子</span>
+        <button class="opt" id="rerollBtn">换一版旋律 🎲</button>
+      </div>
+
+      <h2>产物</h2>
+      <div class="downloads" id="downloads"></div>
+      <div class="chord-strip" id="chordStrip"></div>
+      <div class="status" id="status"></div>
+    </aside>
+  </div>
+</div>
+<script src="{{ url_for('static', filename='paint.js') }}"></script>
+</body>
+</html>

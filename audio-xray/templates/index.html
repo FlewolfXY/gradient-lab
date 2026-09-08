@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>audio-xray · 音乐解剖台</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="page">
+  <header class="hero">
+    <h1>audio-xray</h1>
+    <p class="sub">上传一段音频，看见它的图层 —— 结构素胚、频谱光带、Chroma 色带、节奏骨架、纹样矩阵。</p>
+  </header>
+
+  <form class="upload-zone" id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
+    <input type="file" id="fileInput" name="audio" accept="audio/*,.mp3,.wav,.m4a,.aiff,.flac,.ogg" hidden>
+    <div class="upload-inner" id="dropZone">
+      <div class="upload-icon">◉</div>
+      <div class="upload-text">点击选择或拖拽音频到这里</div>
+      <div class="upload-hint">mp3 / wav / m4a / flac / aiff · 30 秒—整首都可以</div>
+    </div>
+    <div class="analyzing" id="analyzing" hidden>
+      <div class="spinner"></div>
+      <div>正在解剖…… 整首歌大约需要 20—60 秒</div>
+    </div>
+  </form>
+
+  {% if tracks %}
+  <section class="track-list">
+    <h2>已解剖的歌</h2>
+    {% for t in tracks %}
+    <div class="track-row">
+      <a class="track-link" href="/track/{{ t.id }}">
+        <span class="track-title">{{ t.title }}</span>
+        <span class="track-meta">{{ '%d:%02d' % (t.duration // 60, t.duration % 60) }} · {{ t.tempo_bpm }} BPM · {{ t.created }}</span>
+      </a>
+      <form method="post" action="/track/{{ t.id }}/delete" onsubmit="return confirm('删除这首歌的分析？')">
+        <button class="del-btn" type="submit">删除</button>
+      </form>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+</div>
+
+<script>
+const form = document.getElementById('uploadForm');
+const input = document.getElementById('fileInput');
+const zone = document.getElementById('dropZone');
+const analyzing = document.getElementById('analyzing');
+
+function submitFile() {
+  if (!input.files.length) return;
+  zone.hidden = true;
+  analyzing.hidden = false;
+  form.submit();
+}
+zone.addEventListener('click', () => input.click());
+input.addEventListener('change', submitFile);
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('drag');
+  if (e.dataTransfer.files.length) { input.files = e.dataTransfer.files; submitFile(); }
+});
+</script>
+</body>
+</html>

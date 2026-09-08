@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ meta.title }} · audio-xray</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="page wide">
+  <header class="track-header">
+    <a class="back" href="/">← 解剖台</a>
+    <h1>{{ meta.title }}</h1>
+    <span class="track-meta" id="headerMeta"></span>
+    <form method="post" action="/track/{{ track_id }}/reanalyze"
+          onsubmit="return confirm('用最新的分析管线重新解析这首歌？（大约需要 20—60 秒）')">
+      <button class="del-btn" type="submit">重新分析</button>
+    </form>
+  </header>
+
+  <audio id="player" src="/track/{{ track_id }}/audio" preload="auto"></audio>
+
+  <div class="transport">
+    <button id="playBtn" class="big-btn">▶ 播放</button>
+    <div class="ctrl-group">
+      <span class="ctrl-label">速度</span>
+      <button class="speed-btn" data-speed="0.5">50%</button>
+      <button class="speed-btn" data-speed="0.75">75%</button>
+      <button class="speed-btn active" data-speed="1">100%</button>
+    </div>
+    <div class="ctrl-group">
+      <button id="loopBtn" class="toggle-btn">循环选区</button>
+      <button id="snapBtn" class="toggle-btn active">吸附节拍</button>
+      <button id="clearSelBtn" class="toggle-btn">清除选区</button>
+    </div>
+    <div class="ctrl-group">
+      <button id="exportBtn" class="toggle-btn accent">导出选区 WAV</button>
+    </div>
+    <div class="ctrl-group">
+      <span class="ctrl-label">缩放</span>
+      <input type="range" id="zoomSlider" min="1" max="8" step="0.5" value="1">
+    </div>
+    <span id="timeReadout" class="time-readout">0:00.0</span>
+  </div>
+
+  <p class="hint">在任意时间轴图层上<b>单击</b>定位播放，<b>拖拽</b>框选一段（开启"循环选区"后会一直循环）。点下方段落卡片可直接选中整段。</p>
+
+  <div id="panels" class="panels"></div>
+
+  <div class="bottom-grid">
+    <section class="ssm-section">
+      <h2>自相似矩阵 <span class="h-sub">整首歌的纹样 · 亮块 = 两个时间片长得像 · 点击可跳转</span></h2>
+      <canvas id="ssmCanvas"></canvas>
+    </section>
+
+    <section class="segments-section">
+      <h2>段落 <span class="h-sub">自动分段是候选，不是真理 · 点卡片选中该段</span></h2>
+      <div id="segmentCards"></div>
+      <h2 style="margin-top:24px">整体笔记</h2>
+      <textarea id="globalNotes" placeholder="写下你听到的：潮湿木柜、鸟突然飞近、这里不是更响而是高频打开了……"></textarea>
+      <button id="saveNotesBtn" class="toggle-btn accent">保存全部笔记</button>
+      <span id="saveStatus" class="save-status"></span>
+    </section>
+  </div>
+</div>
+
+<script>
+window.TRACK_ID = {{ track_id | tojson }};
+</script>
+<script src="{{ url_for('static', filename='viewer.js') }}"></script>
+</body>
+</html>

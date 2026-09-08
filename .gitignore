@@ -1,0 +1,18 @@
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# audio-xray 的上传数据（含受版权保护的音频，不入库）
+audio-xray/data/
+
+# 可再生成的产物
+paint-to-midi/out/
+audio-xray/test_song.wav
+paint-to-midi/test_painting.png
+
+# 私人文件，不入公开仓库
+memory_mustread.md
+Mea_Culpa_Mea_Gravitas.md
+DEMO_BYTEDANCE.md
