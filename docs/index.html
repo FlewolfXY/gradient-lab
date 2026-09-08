@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gradient Lab · 把一幅画读成一段音乐</title>
+<meta name="description" content="Paint → Score：上传一幅画，浏览器里实时把色相、明度、饱和度、细节翻译成调、和弦、旋律与节奏，能听、能下载 MIDI、能解释每一个决定。">
+<meta property="og:title" content="Gradient Lab · Paint → Score">
+<meta property="og:description" content="一幅画 → 一段能听、能下载、能解释的音乐。全部在你的浏览器里计算。">
+<meta property="og:image" content="paintings/mist.jpg">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%237dd3fc'/><stop offset='1' stop-color='%23a5b4fc'/></linearGradient></defs><circle cx='16' cy='16' r='14' fill='url(%23g)'/></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+  <header class="hero">
+    <div class="wordmark">Gradient Lab</div>
+    <h1>把一幅画，读成一段音乐。</h1>
+    <p class="thesis">
+      学习一个陌生领域，不该先学会它的语言。<br>
+      这里把乐理翻译成画画的人已经懂的东西：色相是调，明度是大小调，饱和度是和弦的张力，细节是节奏。
+    </p>
+    <p class="sub">
+      选一幅画或上传你自己的。所有计算都在你的浏览器里完成，<b>画不会离开你的设备</b>。
+      涟漪模式下点画上任意位置，音乐从那里荡开。
+    </p>
+    <nav class="hero-links">
+      <a href="#lab">开始</a>
+      <a href="#why">映射规则</a>
+      <a href="#layers">Score → Layers</a>
+      <a id="repoLink" href="https://github.com/FlewolfXY/gradient-lab" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="lab" class="layout">
+    <section class="canvas-side">
+      <div class="canvas-wrap" id="canvasWrap">
+        <img id="painting" alt="">
+        <canvas id="overlay"></canvas>
+        <div class="canvas-hint" id="canvasHint">正在读画……</div>
+      </div>
+      <div class="transport">
+        <button id="playBtn" class="big-btn" disabled>▶ 播放</button>
+        <button id="stopBtn" class="icon-btn" title="回到开头">■</button>
+        <span id="nowChord" class="now-chord"></span>
+        <span id="keyReadout" class="key-readout"></span>
+      </div>
+      <div class="status" id="status"></div>
+    </section>
+
+    <aside class="controls">
+      <h2>画</h2>
+      <div class="gallery" id="gallery"></div>
+      <label class="upload-btn">上传你的画（只在本地处理）<input type="file" id="uploadInput" accept="image/*" hidden></label>
+
+      <h2>读法</h2>
+      <div class="btn-row">
+        <button class="opt scan-btn active" data-scan="lr">左 → 右</button>
+        <button class="opt scan-btn" data-scan="tb">上 → 下</button>
+        <button class="opt scan-btn" data-scan="ripple">涟漪 ◉</button>
+      </div>
+      <p class="tip" id="rippleTip" hidden>点画上任意位置设置涟漪中心（默认在最亮处）</p>
+
+      <h2>声音 Gradient</h2>
+      <div class="btn-row preset-row" id="presetRow"></div>
+      <p class="tip">同一副骨架，四个世界。这就是 Gradient Map 的听觉版。</p>
+
+      <h2>参数</h2>
+      <div class="param-row"><span>速度</span>
+        <input type="range" id="tempoSlider" min="50" max="120" value="80">
+        <b id="tempoVal">80</b>
+      </div>
+      <div class="param-row"><span>调式</span>
+        <div class="btn-row">
+          <button class="opt mode-btn active" data-mode="">听画的</button>
+          <button class="opt mode-btn" data-mode="major">大调</button>
+          <button class="opt mode-btn" data-mode="minor">小调</button>
+        </div>
+      </div>
+      <div class="param-row"><span>种子</span>
+        <button class="opt" id="rerollBtn">换一版旋律</button>
+        <button class="opt" id="shareBtn" title="复制当前状态的链接">复制链接</button>
+      </div>
+
+      <h2>带走</h2>
+      <div class="downloads" id="downloads"></div>
+      <p class="tip">把三个 .mid 拖进 Logic / GarageBand / Ableton，各配一个乐器。算法给骨架，审美归你。</p>
+      <div class="chord-strip" id="chordStrip"></div>
+    </aside>
+  </main>
+
+  <section class="report" id="report"></section>
+
+  <section id="why" class="prose">
+    <h2>为什么是这样映射</h2>
+    <p>不是像素 → 音符的花活，是画面 → <b>音乐决策</b>的翻译。每一条规则都能用画画的人的直觉解释。</p>
+    <table class="map-table">
+      <thead><tr><th>画面</th><th>音乐</th><th>为什么</th></tr></thead>
+      <tbody>
+        <tr><td>全画主色相（饱和度加权，灰色不投票）走五度圈</td><td>主音 / 调</td><td>相邻色相 → 相邻的调，色环和五度圈都是圆</td></tr>
+        <tr><td>明度 + 冷暖</td><td>大调 / 小调</td><td>亮而暖的画很少是小调</td></tr>
+        <tr><td>扫描方向</td><td>时间轴</td><td>画 = 卷轴 / 瀑布 / 水面</td></tr>
+        <tr><td>每小节区域偏离全画基调的程度（排名）</td><td>和弦功能：主 → 下属 → 属</td><td>像基调 = 在家；偏得远 = 想回家</td></tr>
+        <tr><td>饱和度</td><td>和弦张力：三和弦 → 加 7 → 加 9</td><td>颜色越浓，声音越湿润复杂</td></tr>
+        <tr><td>明度</td><td>音区高低</td><td>亮 = 高</td></tr>
+        <tr><td>区域内最亮处的位置</td><td>旋律轮廓</td><td>旋律住在画面最亮处</td></tr>
+        <tr><td>边缘 / 细节密度</td><td>节奏密度（近黑 = 休止）</td><td>笔触密的地方音也密</td></tr>
+      </tbody>
+    </table>
+    <p>硬规则保底：第 1 与最后 1 小节锁主和弦，每 4 小节拉向属和弦（终止式），所有和弦在调内，旋律强拍吸附和弦音。所以<b>保证协和，丑也丑得在调上</b>。随机性只留给力度与微小的时值抖动——同一幅画、同一个种子，永远召唤出同一首曲子。</p>
+    <p>已知的边界：当一幅画有两个势均力敌的色彩阵营（比如火焰与蓝色机器人），饱和度加权的平均色相会落在两者之间一个并不存在的颜色上。下一版会检测双色调对峙，让主色定调、副色变成"外来和弦"。</p>
+  </section>
+
+  <section id="layers" class="prose">
+    <h2>Score → Layers · 音乐解剖台</h2>
+    <p>这是同一个论点的反方向：上传一段音频，把它拆成能看、能点、能循环的"图层面板"——波形、CQT 音高谱、Mel 频谱、十二音级色带、三段响度曲线、和弦候选、段落边界与自相似矩阵，并为每一段生成一句人话（"不是更响，是更亮"）。</p>
+    <p>它依赖 Python 端的 librosa，目前作为本地工具随仓库提供。运行方式见 <a id="xrayLink" href="https://github.com/FlewolfXY/gradient-lab/tree/main/audio-xray" target="_blank" rel="noopener">audio-xray/</a>。</p>
+  </section>
+
+  <footer>
+    <span>Gradient Lab · Flewolf · 2026</span>
+    <span>钢琴采样：Salamander Grand Piano (CC-BY) · 音频引擎：Tone.js</span>
+  </footer>
+</div>
+
+<script src="https://unpkg.com/tone@15.1.22/build/Tone.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
