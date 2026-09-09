@@ -347,7 +347,8 @@ function makeMelody(field, bars, chords, g, rnd, nBars) {
       }
       const vel = Math.max(30, Math.min(110, Math.trunc(58 + strip.sat * 40 + randInt(rnd, -5, 6))));
       const start = Math.max(0, barI * 4 + onset + randNormal(rnd, 0.008));
-      events.push([start, dur * 0.92, note, vel]);
+      // 第 5 项：这个音"来自"画上的哪个位置（该时值槽的亮度重心），给前端画光点用
+      events.push([start, dur * 0.92, note, vel, [st.cx, st.cy]]);
       prevNote = note;
     });
   });

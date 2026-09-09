@@ -110,21 +110,26 @@ export class Engine {
     this.presetName = null;
     this.parts = [];
     this.result = null;
-    this.onEnd = () => {};
     this.onState = () => {};
-    this._endId = null;
+    this.onNote = () => {};       // (ev, kind) 每个音响起时回调，用来在画上点光
+    this._loading = null;
+  }
+
+  /** 建输出链。不需要用户手势，可在页面加载后预热。 */
+  init() {
+    if (this.limiter) return;
+    this.limiter = new Tone.Limiter(-1).toDestination();
+    Tone.getDestination().volume.value = -2;
   }
 
   async ensureStarted() {
+    this.init();
     await Tone.start();
-    if (!this.limiter) {
-      this.limiter = new Tone.Limiter(-1).toDestination();
-      Tone.getDestination().volume.value = -2;
-    }
   }
 
   async setPreset(name) {
-    if (this.presetName === name && this.preset) return;
+    if (this.presetName === name && this.preset) return this._loading;
+    this.init();
     const wasPlaying = this.playing;
     const pos = this.beat;
     this.stop();
@@ -132,7 +137,8 @@ export class Engine {
     this.preset = buildPreset(name);
     this.presetName = name;
     this.preset.bus.connect(this.limiter);
-    await this.preset.ready;
+    this._loading = this.preset.ready;
+    await this._loading;
     if (this.result) this.load(this.result, false);
     if (wasPlaying) this.play(pos);
   }
@@ -144,27 +150,33 @@ export class Engine {
     this.parts.forEach(p => p.dispose());
     this.parts = [];
     const T = Tone.getTransport();
-    if (this._endId !== null) { T.clear(this._endId); this._endId = null; }
     this.result = result;
     if (!this.preset) return;
     T.bpm.value = result.tempo;
     const spb = 60 / result.tempo;
     const inst = this.preset;
-    const mk = (events, synth, gain) => {
+    const draw = Tone.getDraw();
+    const mk = (events, synth, gain, kind) => {
       const part = new Tone.Part((time, ev) => {
         const note = Tone.Frequency(ev.note, 'midi').toNote();
         synth.triggerAttackRelease(note, ev.dur * spb, time, (ev.vel / 127) * gain);
-      }, events.map(([s, d, n, v]) => ({ time: s * spb, note: n, dur: d, vel: v })));
+        draw.schedule(() => this.onNote(ev, kind), time);
+      }, events.map(([s, d, n, v, pos]) => ({ time: s * spb, note: n, dur: d, vel: v, pos })));
+      const loopEnd = result.bars * 4 * spb;
+      part.loop = true;
+      part.loopStart = 0;
+      part.loopEnd = loopEnd;
       part.start(0);
       return part;
     };
     this.parts = [
-      mk(result.tracks.melody, inst.melody, 1.0),
-      mk(result.tracks.chords, inst.chords, 0.9),
-      mk(result.tracks.bass, inst.bass, 0.95),
+      mk(result.tracks.melody, inst.melody, 1.0, 'melody'),
+      mk(result.tracks.chords, inst.chords, 0.9, 'chords'),
+      mk(result.tracks.bass, inst.bass, 0.95, 'bass'),
     ];
-    const endSec = result.bars * 4 * spb + 1.5;
-    this._endId = T.scheduleOnce(() => { this.stop(); this.onEnd(); }, endSec);
+    T.loop = true;
+    T.loopStart = 0;
+    T.loopEnd = result.bars * 4 * spb;
     if (wasPlaying) this.play(pos);
   }
 
@@ -192,6 +204,7 @@ export class Engine {
     this.onState(false);
   }
 
+  get ready() { return this._loading || Promise.resolve(); }
   get playing() { return Tone.getTransport().state === 'started'; }
   get beat() {
     if (!this.result) return 0;

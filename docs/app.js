@@ -1,4 +1,4 @@
-import { analyzeImage, summon, SCAN_NAMES } from './paint2score.js';
+import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js';
 import { buildMidi } from './midi.js';
 import { Engine, PRESETS } from './sound.js';
 
@@ -19,7 +19,7 @@ const state = {
   painting: null,     // id 或 'upload'
   title: '',
   analysis: null,
-  scan: 'lr',
+  scan: 'ripple',
   focus: null,
   tempo: 80,
   mode: '',
@@ -27,9 +27,21 @@ const state = {
   preset: 'piano',
   result: null,
   blobUrls: [],
+  everPlayed: false,
 };
 const engine = new Engine();
 window.__gl = { state, engine };
+
+// 音响起时在画上炸开的光点
+const sparks = [];
+engine.onNote = (ev, kind) => {
+  if (kind === 'melody' && ev.pos) {
+    sparks.push({ x: ev.pos[0], y: ev.pos[1], t: performance.now(), note: ev.note, vel: ev.vel, kind });
+  } else if (kind === 'bass') {
+    sparks.push({ t: performance.now(), kind, vel: ev.vel });
+  }
+  if (sparks.length > 80) sparks.splice(0, sparks.length - 80);
+};
 
 function setStatus(text, cls = '') {
   statusEl.textContent = text;
@@ -84,8 +96,28 @@ function doRender() {
   buildDownloads();
   buildChordStrip();
   buildReport();
+  sparks.length = 0;
+  updateHint();
   drawOverlay();
   writeHash();
+  schedulePreload();
+  if (state.resumeAfterRender) {
+    state.resumeAfterRender = false;
+    armAudio().then(() => engine.play(0)).catch(() => {});
+  }
+}
+
+function updateHint() {
+  if (!state.result) return;
+  if (state.everPlayed) { hint.hidden = true; return; }
+  hint.classList.remove('loading');
+  hint.textContent = '点画上任意一点，音乐从那里荡开';
+  hint.hidden = false;
+}
+
+function schedulePreload() {
+  if (engine.preset || engine._loading) return;
+  engine.setPreset(state.preset).catch(() => {});
 }
 
 function buildDownloads() {
@@ -264,13 +296,67 @@ function drawOverlay() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   const playing = engine.playing;
-  const beat = engine.beat;
+  const totalBeats = state.result.bars * 4;
+  const beat = totalBeats > 0 ? ((engine.beat % totalBeats) + totalBeats) % totalBeats : 0;
   const bar = drawGeometry(ctx, W, H, state.result.geometry, beat, playing);
   const active = playing || beat > 0;
+  drawSparks(ctx, W, H);
+  if (!playing) drawIdleRing(ctx, W, H);
   const chord = state.result.chords[bar];
   nowChord.textContent = active && chord ? `${chord.label}（${chord.degree}）` : '';
   document.querySelectorAll('.chord-chip').forEach((chip, i) => chip.classList.toggle('playing', active && i === bar));
   document.querySelectorAll('.bar-table tr[data-bar]').forEach(tr => tr.classList.toggle('playing', active && +tr.dataset.bar === bar));
+}
+
+const SPARK_LIFE = 1400;
+function drawSparks(ctx, W, H) {
+  const now = performance.now();
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    if (now - sparks[i].t > SPARK_LIFE) sparks.splice(i, 1);
+  }
+  const geo = state.result.geometry;
+  const base = Math.min(W, H);
+  for (const s of sparks) {
+    const age = (now - s.t) / SPARK_LIFE;
+    const ease = 1 - Math.pow(1 - age, 3);
+    if (s.kind === 'bass') {
+      // 低音：从焦点/画面中心推出去一圈很淡的光环
+      const [fx, fy] = geo.type === 'ripple' ? geo.focus : [0.5, 0.5];
+      ctx.strokeStyle = `rgba(165, 180, 252, ${0.35 * (1 - age)})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(fx * W, fy * H, 8 + ease * base * 0.35, 0, Math.PI * 2); ctx.stroke();
+      continue;
+    }
+    // 旋律：在它来自的位置炸开。色相 = 音级（色相是调），大小 = 力度
+    const hue = ((s.note % 12) * 30 + 200) % 360;
+    const size = (6 + (s.vel / 127) * 10) * (base / 480);
+    const x = s.x * W, y = s.y * H;
+    const r = size * (0.6 + ease * 2.2);
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, `hsla(${hue}, 95%, 85%, ${0.95 * (1 - age)})`);
+    grad.addColorStop(0.35, `hsla(${hue}, 90%, 70%, ${0.55 * (1 - age)})`);
+    grad.addColorStop(1, `hsla(${hue}, 90%, 60%, 0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    // 核心亮点
+    ctx.fillStyle = `rgba(255,255,255,${0.9 * (1 - age) ** 2})`;
+    ctx.beginPath(); ctx.arc(x, y, Math.max(1, size * 0.28 * (1 - age)), 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawIdleRing(ctx, W, H) {
+  const geo = state.result.geometry;
+  const [fx, fy] = geo.type === 'ripple' ? geo.focus : (state.analysis.bright || [0.5, 0.5]);
+  const t = (performance.now() % 1800) / 1800;
+  const base = Math.min(W, H);
+  for (const k of [0, 0.5]) {
+    const p = (t + k) % 1;
+    ctx.strokeStyle = `rgba(251, 191, 36, ${0.7 * (1 - p)})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(fx * W, fy * H, 6 + p * base * 0.09, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(251, 191, 36, .95)';
+  ctx.beginPath(); ctx.arc(fx * W, fy * H, 3.5, 0, Math.PI * 2); ctx.fill();
 }
 
 function tick() { drawOverlay(); requestAnimationFrame(tick); }
@@ -306,6 +392,8 @@ async function armAudio() {
       setStatus(`加载音色「${PRESETS[state.preset].name}」……`, 'busy');
       await engine.setPreset(state.preset);
       setStatus('');
+    } else {
+      await engine.ready;      // 预加载可能还在路上
     }
   })().finally(() => { arming = null; });
   return arming;
@@ -320,17 +408,27 @@ playBtn.addEventListener('click', async () => {
   }
 });
 stopBtn.addEventListener('click', () => engine.stop());
-engine.onState = (playing) => { playBtn.textContent = playing ? '❚❚ 暂停' : '▶ 播放'; };
-engine.onEnd = () => { playBtn.textContent = '▶ 播放'; };
+engine.onState = (playing) => {
+  playBtn.textContent = playing ? '❚❚ 暂停' : '▶ 播放';
+  if (playing && !state.everPlayed) { state.everPlayed = true; hint.hidden = true; }
+};
 
 // ---------- 交互 ----------
 
-overlay.addEventListener('click', e => {
+// 点画 = 涟漪从那里荡开 + 立刻开始播放。一个手势。
+overlay.addEventListener('click', async e => {
   if (!state.analysis) return;
   const r = overlay.getBoundingClientRect();
   state.focus = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
   if (state.scan !== 'ripple') setScan('ripple');
-  requestRender(true);
+  clearTimeout(renderTimer);
+  doRender();
+  try {
+    await armAudio();
+    engine.play(0);
+  } catch (err) {
+    setStatus('音频启动失败：' + err.message, 'err');
+  }
 });
 
 function setScan(scan) {
@@ -397,14 +495,15 @@ function loadImage(src, id, title, keepParams = false) {
   if (!keepParams) { state.focus = null; state.seed = null; }
   state.analysis = null; state.result = null;
   playBtn.disabled = true;
+  state.resumeAfterRender = engine.playing;   // 换画不打断：读完接着响
   engine.stop();
   document.querySelectorAll('.thumb').forEach(t => t.classList.toggle('active', t.dataset.id === id));
-  hint.hidden = false; hint.textContent = '正在读画……';
+  hint.hidden = false; hint.textContent = '正在读画……'; hint.classList.add('loading');
   img.onload = () => {
-    hint.hidden = true;
     sizeOverlay();
     try {
       state.analysis = analyzeImage(img);
+      state.analysis.bright = brightestPoint(state.analysis);
     } catch (e) {
       setStatus('读图失败：' + e.message, 'err');
       return;
@@ -422,7 +521,27 @@ function selectPainting(id, keepParams = false) {
 
 $('uploadInput').addEventListener('change', e => {
   const f = e.target.files[0];
-  if (!f) return;
+  if (f) openFile(f);
+  e.target.value = '';
+});
+
+// 把图拖到页面任何地方
+const veil = $('dropVeil');
+let dragDepth = 0;
+document.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; veil.classList.add('on'); });
+document.addEventListener('dragover', e => { e.preventDefault(); });
+document.addEventListener('dragleave', e => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; veil.classList.remove('on'); } });
+document.addEventListener('drop', e => {
+  e.preventDefault(); dragDepth = 0; veil.classList.remove('on');
+  const f = [...(e.dataTransfer.files || [])].find(x => x.type.startsWith('image/'));
+  if (f) openFile(f);
+});
+document.addEventListener('paste', e => {
+  const item = [...(e.clipboardData?.items || [])].find(x => x.type.startsWith('image/'));
+  if (item) openFile(item.getAsFile());
+});
+
+function openFile(f) {
   const url = URL.createObjectURL(f);
   const title = f.name.replace(/\.[^.]+$/, '');
   let thumb = gallery.querySelector('[data-id="upload"]');
@@ -436,7 +555,8 @@ $('uploadInput').addEventListener('change', e => {
   thumb.innerHTML = `<img src="${url}" alt="${title}"><span>${title}</span>`;
   history.replaceState(null, '', location.pathname);
   loadImage(url, 'upload', title);
-});
+  document.getElementById('lab').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 
 // ---------- 启动 ----------
 
@@ -446,3 +566,4 @@ setMode(state.mode);
 tempoSlider.value = state.tempo; $('tempoVal').textContent = state.tempo;
 document.querySelectorAll('.preset-btn').forEach(x => x.classList.toggle('active', x.dataset.preset === state.preset));
 selectPainting(state.painting || PAINTINGS[0].id, true);
+schedulePreload();

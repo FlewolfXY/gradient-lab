@@ -15,22 +15,17 @@
 <div class="page">
 
   <header class="hero">
-    <div class="wordmark">Gradient Lab</div>
-    <h1>把一幅画，读成一段音乐。</h1>
-    <p class="thesis">
-      学习一个陌生领域，不该先学会它的语言。<br>
-      这里把乐理翻译成画画的人已经懂的东西：色相是调，明度是大小调，饱和度是和弦的张力，细节是节奏。
-    </p>
-    <p class="sub">
-      选一幅画或上传你自己的。所有计算都在你的浏览器里完成，<b>画不会离开你的设备</b>。
-      涟漪模式下点画上任意位置，音乐从那里荡开。
-    </p>
-    <nav class="hero-links">
-      <a href="#lab">开始</a>
-      <a href="#why">映射规则</a>
-      <a href="#layers">Score → Layers</a>
-      <a id="repoLink" href="https://github.com/FlewolfXY/gradient-lab" target="_blank" rel="noopener">GitHub</a>
-    </nav>
+    <div class="hero-row">
+      <div>
+        <div class="wordmark">Gradient Lab</div>
+        <h1>点画上任意一点。</h1>
+        <p class="sub">音乐会从那里荡开。色相是调，明度是大小调，饱和度是和弦的张力，细节是节奏。</p>
+      </div>
+      <div class="hero-actions">
+        <label class="hero-upload" for="uploadInput">上传你的画</label>
+        <span class="hero-note">或直接把图拖进来 · 只在本地处理</span>
+      </div>
+    </div>
   </header>
 
   <main id="lab" class="layout">
@@ -56,11 +51,11 @@
 
       <h2>读法</h2>
       <div class="btn-row">
-        <button class="opt scan-btn active" data-scan="lr">左 → 右</button>
+        <button class="opt scan-btn" data-scan="lr">左 → 右</button>
         <button class="opt scan-btn" data-scan="tb">上 → 下</button>
-        <button class="opt scan-btn" data-scan="ripple">涟漪 ◉</button>
+        <button class="opt scan-btn active" data-scan="ripple">涟漪 ◉</button>
       </div>
-      <p class="tip" id="rippleTip" hidden>点画上任意位置设置涟漪中心（默认在最亮处）</p>
+      <p class="tip" id="rippleTip">点画上任意位置，音乐从那里荡开</p>
 
       <h2>声音 Gradient</h2>
       <div class="btn-row preset-row" id="presetRow"></div>
@@ -93,6 +88,8 @@
   <section class="report" id="report"></section>
 
   <section id="why" class="prose">
+    <h2>这是什么</h2>
+    <p class="thesis">学习一个陌生领域，不该先学会它的语言。这里把乐理翻译成画画的人已经懂的东西。所有计算都在你的浏览器里完成，<b>画不会离开你的设备</b>。</p>
     <h2>为什么是这样映射</h2>
     <p>不是像素 → 音符的花活，是画面 → <b>音乐决策</b>的翻译。每一条规则都能用画画的人的直觉解释。</p>
     <table class="map-table">
@@ -119,10 +116,11 @@
   </section>
 
   <footer>
-    <span>Gradient Lab · Flewolf · 2026</span>
+    <span>Gradient Lab · Flewolf · 2026 · <a href="https://github.com/FlewolfXY/gradient-lab" target="_blank" rel="noopener">GitHub</a></span>
     <span>钢琴采样：Salamander Grand Piano (CC-BY) · 音频引擎：Tone.js</span>
   </footer>
 </div>
+<div class="drop-veil" id="dropVeil"><span>放手，开始读画</span></div>
 
 <script src="https://unpkg.com/tone@15.1.22/build/Tone.js"></script>
 <script type="module" src="app.js"></script>
