@@ -14,6 +14,13 @@ export const PRESETS = {
   machine: { name: '冷紫机械', desc: '方波脉冲 · 合成低音 · 延迟' },
 };
 
+export const INKS = {
+  spark: { name: '星火', color: '#fbbf24', desc: '钟鸣' },
+  water: { name: '水纹', color: '#67e8f9', desc: '拨弦' },
+  mist: { name: '雾气', color: '#c4b5fd', desc: '长音' },
+  root: { name: '根系', color: '#fb7185', desc: '低音' },
+};
+
 function pianoSampler(release = 1.2) {
   const urls = {};
   PIANO_NOTES.forEach(n => urls[n] = n.replace('#', 's') + '.mp3');
@@ -103,15 +110,57 @@ function buildPreset(name) {
   return { melody, chords, bass, bus, nodes, ready: Promise.all([reverb.ready, Tone.loaded()]) };
 }
 
+function buildInkRack(bus) {
+  const room = new Tone.Reverb({ decay: 4.5, wet: 0.42 });
+  const sparkle = new Tone.PingPongDelay({ delayTime: '8n.', feedback: 0.22, wet: 0.18 });
+  const waterFilter = new Tone.Filter(3400, 'lowpass');
+  const mistFilter = new Tone.Filter(1800, 'lowpass');
+
+  const spark = new Tone.PolySynth(Tone.FMSynth, {
+    volume: -9, harmonicity: 4.01, modulationIndex: 10,
+    oscillator: { type: 'sine' }, modulation: { type: 'triangle' },
+    envelope: { attack: 0.003, decay: 0.55, sustain: 0.04, release: 2.2 },
+    modulationEnvelope: { attack: 0.002, decay: 0.22, sustain: 0, release: 0.8 },
+  });
+  const water = new Tone.PolySynth(Tone.Synth, {
+    volume: -11, oscillator: { type: 'triangle' },
+    envelope: { attack: 0.006, decay: 0.28, sustain: 0.12, release: 1.1 },
+  });
+  const mist = new Tone.PolySynth(Tone.AMSynth, {
+    volume: -17, harmonicity: 1.25,
+    oscillator: { type: 'sine' }, modulation: { type: 'triangle' },
+    envelope: { attack: 0.55, decay: 0.5, sustain: 0.72, release: 2.6 },
+  });
+  const root = new Tone.MonoSynth({
+    volume: -8, oscillator: { type: 'sine' },
+    envelope: { attack: 0.015, decay: 0.45, sustain: 0.55, release: 1.1 },
+    filterEnvelope: { attack: 0.01, decay: 0.28, sustain: 0.3, release: 0.8, baseFrequency: 90, octaves: 2.2 },
+  });
+
+  spark.chain(sparkle, room, bus);
+  water.chain(waterFilter, room, bus);
+  mist.chain(mistFilter, room, bus);
+  root.chain(room, bus);
+  return {
+    synths: { spark, water, mist, root },
+    nodes: [room, sparkle, waterFilter, mistFilter, spark, water, mist, root],
+    ready: room.ready,
+  };
+}
+
 export class Engine {
   constructor() {
     this.limiter = null;
     this.preset = null;
     this.presetName = null;
     this.parts = [];
+    this.inkParts = [];
+    this.inkRack = null;
+    this.inkEvents = [];
     this.result = null;
     this.onState = () => {};
     this.onNote = () => {};       // (ev, kind) 每个音响起时回调，用来在画上点光
+    this.onInk = () => {};
     this._loading = null;
   }
 
@@ -120,6 +169,12 @@ export class Engine {
     if (this.limiter) return;
     this.limiter = new Tone.Limiter(-1).toDestination();
     Tone.getDestination().volume.value = -2;
+  }
+
+  _ensureInkRack() {
+    this.init();
+    if (!this.inkRack) this.inkRack = buildInkRack(this.limiter);
+    return this.inkRack;
   }
 
   async ensureStarted() {
@@ -177,7 +232,45 @@ export class Engine {
     T.loop = true;
     T.loopStart = 0;
     T.loopEnd = result.bars * 4 * spb;
+    this.setInks(this.inkEvents);
     if (wasPlaying) this.play(pos);
+  }
+
+  setInks(events) {
+    this.inkEvents = events || [];
+    this.inkParts.forEach(p => p.dispose());
+    this.inkParts = [];
+    if (!this.result || !this.inkEvents.length) return;
+    const rack = this._ensureInkRack();
+    const spb = 60 / this.result.tempo;
+    const loopEnd = this.result.bars * 4 * spb;
+    const draw = Tone.getDraw();
+    for (const kind of Object.keys(INKS)) {
+      const source = this.inkEvents.filter(e => e.kind === kind);
+      if (!source.length) continue;
+      const part = new Tone.Part((time, ev) => {
+        const note = Tone.Frequency(ev.note, 'midi').toNote();
+        rack.synths[kind].triggerAttackRelease(note, ev.dur * spb, time, ev.vel / 127);
+        draw.schedule(() => this.onInk(ev), time);
+      }, source.map(e => ({
+        time: e.beat * spb, id: e.id, note: e.note, dur: e.dur,
+        vel: e.vel, kind: e.kind, x: e.x, y: e.y,
+      })));
+      part.loop = true;
+      part.loopStart = 0;
+      part.loopEnd = loopEnd;
+      part.start(0);
+      this.inkParts.push(part);
+    }
+  }
+
+  async triggerInk(mark) {
+    await this.ensureStarted();
+    const rack = this._ensureInkRack();
+    await rack.ready;
+    const note = Tone.Frequency(mark.note, 'midi').toNote();
+    const seconds = Math.max(0.12, mark.dur * 60 / (this.result?.tempo || 80));
+    rack.synths[mark.kind].triggerAttackRelease(note, seconds, Tone.now(), mark.vel / 127);
   }
 
   play(fromBeat = null) {
@@ -197,6 +290,12 @@ export class Engine {
     T.stop(); T.seconds = 0;
     if (this.preset) {
       for (const s of [this.preset.melody, this.preset.chords, this.preset.bass]) {
+        if (s.releaseAll) s.releaseAll();
+        else if (s.triggerRelease) s.triggerRelease();
+      }
+    }
+    if (this.inkRack) {
+      for (const s of Object.values(this.inkRack.synths)) {
         if (s.releaseAll) s.releaseAll();
         else if (s.triggerRelease) s.triggerRelease();
       }

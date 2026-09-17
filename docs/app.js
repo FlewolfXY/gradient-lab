@@ -1,6 +1,6 @@
 import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js';
 import { buildMidi } from './midi.js';
-import { Engine, PRESETS } from './sound.js';
+import { Engine, PRESETS, INKS } from './sound.js';
 
 const PAINTINGS = [
   { id: 'mist', title: '蓝雾', file: 'paintings/mist.jpg' },
@@ -28,6 +28,10 @@ const state = {
   result: null,
   blobUrls: [],
   everPlayed: false,
+  tool: 'origin',
+  inkKind: 'spark',
+  ink: [],
+  strokeSeq: 0,
 };
 const engine = new Engine();
 window.__gl = { state, engine };
@@ -41,6 +45,10 @@ engine.onNote = (ev, kind) => {
     sparks.push({ t: performance.now(), kind, vel: ev.vel });
   }
   if (sparks.length > 80) sparks.splice(0, sparks.length - 80);
+};
+engine.onInk = ev => {
+  const mark = state.ink.find(x => x.id === ev.id);
+  if (mark) mark.pulse = performance.now();
 };
 
 function setStatus(text, cls = '') {
@@ -88,7 +96,9 @@ function doRender() {
     tempo: state.tempo, mode: state.mode || null, seed: state.seed,
   });
   if (state.scan === 'ripple') state.focus = state.result.focus;
+  updateInkMapping();
   engine.load(state.result);
+  engine.setInks(state.ink);
   playBtn.disabled = false;
   const g = state.result.global;
   keyReadout.innerHTML = `${state.result.key}（判定分 ${g.modeScore.toFixed(2)}）<br>` +
@@ -109,9 +119,14 @@ function doRender() {
 
 function updateHint() {
   if (!state.result) return;
-  if (state.everPlayed) { hint.hidden = true; return; }
   hint.classList.remove('loading');
-  hint.textContent = '点画上任意一点，音乐从那里荡开';
+  if (state.everPlayed) {
+    hint.textContent = '现在在画上点几下，或划一笔';
+    hint.hidden = state.tool !== 'ink';
+    if (!hint.hidden) setTimeout(() => { if (state.everPlayed) hint.hidden = true; }, 2600);
+    return;
+  }
+  hint.textContent = '点一下，音乐从这里荡开';
   hint.hidden = false;
 }
 
@@ -124,13 +139,18 @@ function buildDownloads() {
   state.blobUrls.forEach(u => URL.revokeObjectURL(u));
   state.blobUrls = [];
   const { melody, chords, bass } = state.result.tracks;
+  const ink = state.ink.map(m => [m.beat, m.dur, m.note, m.vel]);
   const bpm = state.result.tempo;
   const stem = (state.title || 'painting').replace(/\s+/g, '_');
   const items = [
     ['melody.mid', buildMidi([['melody', melody]], bpm)],
     ['chords.mid', buildMidi([['chords', chords]], bpm)],
     ['bass.mid', buildMidi([['bass', bass]], bpm)],
-    ['combined.mid', buildMidi([['melody', melody], ['chords', chords], ['bass', bass]], bpm)],
+    ...(ink.length ? [['painted.mid', buildMidi([['hand-painted', ink]], bpm)]] : []),
+    ['combined.mid', buildMidi([
+      ['melody', melody], ['chords', chords], ['bass', bass],
+      ...(ink.length ? [['hand-painted', ink]] : []),
+    ], bpm)],
   ];
   const box = $('downloads');
   box.innerHTML = '';
@@ -300,6 +320,7 @@ function drawOverlay() {
   const beat = totalBeats > 0 ? ((engine.beat % totalBeats) + totalBeats) % totalBeats : 0;
   const bar = drawGeometry(ctx, W, H, state.result.geometry, beat, playing);
   const active = playing || beat > 0;
+  drawInk(ctx, W, H);
   drawSparks(ctx, W, H);
   if (!playing) drawIdleRing(ctx, W, H);
   const chord = state.result.chords[bar];
@@ -309,6 +330,51 @@ function drawOverlay() {
 }
 
 const SPARK_LIFE = 1400;
+function drawInk(ctx, W, H, scale = 1) {
+  if (!state.ink.length) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // 连续拖动形成的点属于同一笔；画出一条真正留在画上的彩色声部。
+  for (let i = 1; i < state.ink.length; i++) {
+    const a = state.ink[i - 1], b = state.ink[i];
+    if (a.stroke !== b.stroke || a.kind !== b.kind) continue;
+    ctx.strokeStyle = INKS[b.kind].color + 'cc';
+    ctx.lineWidth = 3.2 * scale;
+    ctx.shadowColor = INKS[b.kind].color;
+    ctx.shadowBlur = 5 * scale;
+    ctx.beginPath();
+    ctx.moveTo(a.x * W, a.y * H);
+    ctx.lineTo(b.x * W, b.y * H);
+    ctx.stroke();
+  }
+
+  const now = performance.now();
+  for (const m of state.ink) {
+    const color = INKS[m.kind].color;
+    const x = m.x * W, y = m.y * H;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 7 * scale;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 2.5 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    if (m.pulse) {
+      const age = Math.min(1, (now - m.pulse) / 850);
+      if (age < 1) {
+        ctx.shadowBlur = 12 * scale;
+        ctx.strokeStyle = color + Math.round((1 - age) * 220).toString(16).padStart(2, '0');
+        ctx.lineWidth = 2 * scale;
+        ctx.beginPath();
+        ctx.arc(x, y, (5 + age * 18) * scale, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.restore();
+}
+
 function drawSparks(ctx, W, H) {
   const now = performance.now();
   for (let i = sparks.length - 1; i >= 0; i--) {
@@ -369,6 +435,7 @@ function exportAnnotated() {
   const ctx = cv.getContext('2d');
   ctx.drawImage(img, 0, 0, W, H);
   drawGeometry(ctx, W, H, state.result.geometry, 0, false, true, Math.max(1, W / 640));
+  drawInk(ctx, W, H, Math.max(1, W / 640));
   ctx.font = `500 ${Math.round(13 * Math.max(1, W / 640))}px -apple-system, "PingFang SC", sans-serif`;
   ctx.textBaseline = 'bottom';
   const foot = `${state.title} · ${state.result.key} · ${state.result.tempo} BPM · ${SCAN_NAMES[state.result.scan]} · Gradient Lab`;
@@ -415,20 +482,157 @@ engine.onState = (playing) => {
 
 // ---------- 交互 ----------
 
-// 点画 = 涟漪从那里荡开 + 立刻开始播放。一个手势。
-overlay.addEventListener('click', async e => {
-  if (!state.analysis) return;
+function canvasPoint(e) {
   const r = overlay.getBoundingClientRect();
-  state.focus = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+  return [
+    Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
+    Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)),
+  ];
+}
+
+function pointToBeat(x, y) {
+  const geo = state.result.geometry;
+  let value;
+  if (geo.type === 'lr') value = x;
+  else if (geo.type === 'tb') value = y;
+  else {
+    const aspect = state.analysis.h / state.analysis.w;
+    value = Math.hypot(x - geo.focus[0], (y - geo.focus[1]) * aspect);
+  }
+  const b = geo.bounds;
+  let bar = b.length - 2;
+  for (let i = 0; i < b.length - 1; i++) {
+    if (value <= b[i + 1]) { bar = i; break; }
+  }
+  const frac = Math.max(0, Math.min(1, (value - b[bar]) / Math.max(1e-6, b[bar + 1] - b[bar])));
+  return Math.min(state.result.bars * 4 - 0.01, (bar + frac) * 4);
+}
+
+function pointToPitch(y, kind) {
+  const scale = state.result.mode === 'major' ? [0, 2, 4, 5, 7, 9, 11] : [0, 2, 3, 5, 7, 8, 10];
+  const tonic = state.result.global.tonicPc;
+  const target = kind === 'root' ? 57 - y * 17 : 86 - y * 34;
+  let best = 60, dist = Infinity;
+  const lo = kind === 'root' ? 36 : 48;
+  const hi = kind === 'root' ? 62 : 88;
+  for (let n = lo; n <= hi; n++) {
+    if (!scale.includes(((n - tonic) % 12 + 12) % 12)) continue;
+    const d = Math.abs(n - target);
+    if (d < dist) { best = n; dist = d; }
+  }
+  return best;
+}
+
+function updateInkMapping() {
+  if (!state.result) return;
+  for (const m of state.ink) {
+    m.beat = pointToBeat(m.x, m.y);
+    m.note = pointToPitch(m.y, m.kind);
+  }
+}
+
+let inkSyncTimer = null;
+function syncInk(immediate = false) {
+  clearTimeout(inkSyncTimer);
+  inkSyncTimer = setTimeout(() => {
+    engine.setInks(state.ink);
+    buildDownloads();
+  }, immediate ? 0 : 80);
+}
+
+function setTool(tool) {
+  state.tool = tool;
+  document.querySelector('.origin-tool').classList.toggle('active', tool === 'origin');
+  $('paintTools').classList.toggle('ready', state.everPlayed || tool === 'ink');
+  wrap.classList.toggle('inking', tool === 'ink');
+}
+
+async function chooseOrigin(point) {
+  const audioReady = armAudio(); // 必须在用户手势内启动 AudioContext
+  state.focus = point;
   if (state.scan !== 'ripple') setScan('ripple');
   clearTimeout(renderTimer);
   doRender();
   try {
-    await armAudio();
+    await audioReady;
     engine.play(0);
+    setTool('ink');
+    hint.textContent = '现在在画上点几下，或划一笔';
+    hint.hidden = false;
+    setTimeout(() => { hint.hidden = true; }, 2600);
   } catch (err) {
     setStatus('音频启动失败：' + err.message, 'err');
   }
+}
+
+function addInkPoint(point, stroke) {
+  const [x, y] = point;
+  const previous = state.ink[state.ink.length - 1];
+  if (previous && previous.stroke === stroke && Math.hypot(previous.x - x, previous.y - y) < 0.012) return;
+  const kind = state.inkKind;
+  const mark = {
+    id: `${Date.now().toString(36)}-${state.ink.length}`,
+    stroke, kind, x, y,
+    beat: pointToBeat(x, y),
+    note: pointToPitch(y, kind),
+    dur: kind === 'mist' ? 2.2 : kind === 'root' ? 1.35 : 0.55,
+    vel: kind === 'mist' ? 72 : kind === 'root' ? 92 : 98,
+    pulse: performance.now(),
+  };
+  state.ink.push(mark);
+  if (state.ink.length > 240) state.ink.splice(0, state.ink.length - 240);
+  armAudio().then(() => engine.triggerInk(mark)).catch(err => setStatus('点色失败：' + err.message, 'err'));
+  syncInk();
+}
+
+let drawing = false;
+let activeStroke = 0;
+overlay.addEventListener('pointerdown', e => {
+  if (!state.analysis || !state.result) return;
+  e.preventDefault();
+  const point = canvasPoint(e);
+  if (state.tool === 'origin') {
+    chooseOrigin(point);
+    return;
+  }
+  drawing = true;
+  activeStroke = ++state.strokeSeq;
+  try { overlay.setPointerCapture(e.pointerId); } catch { /* synthetic events / older Safari */ }
+  addInkPoint(point, activeStroke);
+});
+overlay.addEventListener('pointermove', e => {
+  if (!drawing || state.tool !== 'ink') return;
+  const coalesced = e.getCoalescedEvents?.();
+  for (const p of (coalesced?.length ? coalesced : [e])) addInkPoint(canvasPoint(p), activeStroke);
+});
+overlay.addEventListener('pointerup', e => {
+  if (!drawing) return;
+  drawing = false;
+  try { if (overlay.hasPointerCapture(e.pointerId)) overlay.releasePointerCapture(e.pointerId); } catch {}
+  syncInk(true);
+});
+overlay.addEventListener('pointercancel', () => { drawing = false; syncInk(true); });
+
+document.querySelector('.origin-tool').addEventListener('click', () => {
+  setTool('origin');
+  hint.textContent = '点一下，重新选择音乐荡开的起点';
+  hint.hidden = false;
+});
+document.querySelectorAll('.ink-swatch').forEach(btn => btn.addEventListener('click', () => {
+  state.inkKind = btn.dataset.ink;
+  document.querySelectorAll('.ink-swatch').forEach(x => x.classList.toggle('active', x === btn));
+  setTool('ink');
+  setStatus(`${INKS[state.inkKind].name} · ${INKS[state.inkKind].desc}：在画上点或划`);
+}));
+$('inkUndo').addEventListener('click', () => {
+  const last = state.ink[state.ink.length - 1]?.stroke;
+  if (last === undefined) return;
+  state.ink = state.ink.filter(m => m.stroke !== last);
+  syncInk(true);
+});
+$('inkClear').addEventListener('click', () => {
+  state.ink = [];
+  syncInk(true);
 });
 
 function setScan(scan) {
@@ -436,7 +640,11 @@ function setScan(scan) {
   document.querySelectorAll('.scan-btn').forEach(b => b.classList.toggle('active', b.dataset.scan === scan));
   $('rippleTip').hidden = scan !== 'ripple';
 }
-document.querySelectorAll('.scan-btn').forEach(btn => btn.addEventListener('click', () => { setScan(btn.dataset.scan); requestRender(true); }));
+document.querySelectorAll('.scan-btn').forEach(btn => btn.addEventListener('click', () => {
+  setScan(btn.dataset.scan);
+  setTool('ink');
+  requestRender(true);
+}));
 
 function setMode(mode) {
   state.mode = mode;
@@ -456,7 +664,10 @@ $('rerollBtn').addEventListener('click', () => { state.seed = Math.floor(Math.ra
 $('shareBtn').addEventListener('click', async () => {
   if (state.painting === 'upload') { setStatus('上传的画只在你本地，链接无法带上它；换成内置画作即可分享。', 'err'); return; }
   writeHash();
-  try { await navigator.clipboard.writeText(location.href); setStatus('链接已复制，打开即复现这一刻的画、读法、焦点与音色。'); }
+  try {
+    await navigator.clipboard.writeText(location.href);
+    setStatus(state.ink.length ? '链接已复制；扫描状态会复现，手绘点色请下载 MIDI 或标注图带走。' : '链接已复制，打开即复现这一刻的画、读法、焦点与音色。');
+  }
   catch { setStatus(location.href); }
 });
 
@@ -493,6 +704,8 @@ PAINTINGS.forEach(p => {
 function loadImage(src, id, title, keepParams = false) {
   state.painting = id; state.title = title;
   if (!keepParams) { state.focus = null; state.seed = null; }
+  state.ink = [];
+  setTool('origin');
   state.analysis = null; state.result = null;
   playBtn.disabled = true;
   state.resumeAfterRender = engine.playing;   // 换画不打断：读完接着响

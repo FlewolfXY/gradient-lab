@@ -75,7 +75,7 @@ a { color: var(--ice); }
 .canvas-wrap img { display: block; max-width: 100%; max-height: 76vh; }
 .canvas-wrap canvas { position: absolute; left: 0; top: 0; cursor: crosshair; touch-action: manipulation; }
 .canvas-hint {
-  position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+  position: absolute; z-index: 4; bottom: 16px; left: 50%; transform: translateX(-50%);
   color: var(--text); font-size: 14px; pointer-events: none; white-space: nowrap;
   background: rgba(10, 15, 26, .72); border: 1px solid var(--line); border-radius: 999px;
   padding: 8px 16px; backdrop-filter: blur(6px);
@@ -83,6 +83,39 @@ a { color: var(--ice); }
 }
 .canvas-hint.loading { bottom: auto; top: 50%; transform: translate(-50%, -50%); color: var(--dim); }
 @keyframes hint-in { from { opacity: 0; transform: translateX(-50%) translateY(8px); } }
+
+.paint-tools {
+  position: absolute; z-index: 5; top: 14px; left: 14px;
+  display: flex; align-items: center; gap: 7px; padding: 7px;
+  background: rgba(10, 15, 26, .76); border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 999px; backdrop-filter: blur(10px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .22);
+  opacity: .25; transition: opacity .2s, transform .2s;
+}
+.canvas-wrap:hover .paint-tools, .paint-tools:focus-within, .paint-tools.ready { opacity: 1; }
+.paint-tool, .ink-swatch {
+  width: 32px; height: 32px; flex: none; padding: 0;
+  display: grid; place-items: center;
+  color: var(--dim); background: transparent; border: 1px solid transparent;
+  border-radius: 999px; cursor: pointer; font: inherit;
+  transition: transform .12s, color .12s, border-color .12s, background .12s;
+}
+.paint-tool:hover, .paint-tool.active {
+  color: var(--glow); border-color: rgba(251, 191, 36, .55);
+  background: rgba(251, 191, 36, .12);
+}
+.paint-tool span { display: none; }
+.ink-swatch { font-size: 25px; line-height: 1; text-shadow: 0 0 10px currentColor; }
+.ink-swatch:hover, .ink-swatch.active { transform: scale(1.16); border-color: currentColor; }
+.ink-swatch[data-ink="spark"] { color: #fbbf24; }
+.ink-swatch[data-ink="water"] { color: #67e8f9; }
+.ink-swatch[data-ink="mist"] { color: #c4b5fd; }
+.ink-swatch[data-ink="root"] { color: #fb7185; }
+.tool-divider { width: 1px; height: 20px; background: rgba(255, 255, 255, .15); }
+@media (max-width: 600px) {
+  .paint-tools { top: 8px; left: 8px; gap: 3px; padding: 5px; transform: scale(.9); transform-origin: top left; }
+  .paint-tool, .ink-swatch { width: 29px; height: 29px; }
+}
 
 .transport {
   display: flex; align-items: center; gap: 14px;

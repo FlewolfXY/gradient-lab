@@ -18,8 +18,8 @@
     <div class="hero-row">
       <div>
         <div class="wordmark">Gradient Lab</div>
-        <h1>点画上任意一点。</h1>
-        <p class="sub">音乐会从那里荡开。色相是调，明度是大小调，饱和度是和弦的张力，细节是节奏。</p>
+        <h1>点一下，再画几笔。</h1>
+        <p class="sub">音乐会从那里荡开；你留下的每一笔，也会变成声音。色相是调，明度是大小调，饱和度是和弦的张力，细节是节奏。</p>
       </div>
       <div class="hero-actions">
         <label class="hero-upload" for="uploadInput">上传你的画</label>
@@ -32,8 +32,19 @@
     <section class="canvas-side">
       <div class="canvas-wrap" id="canvasWrap">
         <img id="painting" alt="">
-        <canvas id="overlay"></canvas>
+        <canvas id="overlay" role="application" aria-label="可演奏画布" tabindex="0"></canvas>
         <div class="canvas-hint" id="canvasHint">正在读画……</div>
+        <div class="paint-tools" id="paintTools" aria-label="画布工具">
+          <button class="paint-tool origin-tool active" data-tool="origin" title="重新选择音乐荡开的起点">◉<span>起点</span></button>
+          <span class="tool-divider"></span>
+          <button class="ink-swatch active" data-ink="spark" title="星火 · 钟鸣" aria-label="星火">●</button>
+          <button class="ink-swatch" data-ink="water" title="水纹 · 拨弦" aria-label="水纹">●</button>
+          <button class="ink-swatch" data-ink="mist" title="雾气 · 长音" aria-label="雾气">●</button>
+          <button class="ink-swatch" data-ink="root" title="根系 · 低音" aria-label="根系">●</button>
+          <span class="tool-divider"></span>
+          <button class="paint-tool" id="inkUndo" title="撤销最后一笔" aria-label="撤销点色">↶</button>
+          <button class="paint-tool" id="inkClear" title="清空点色" aria-label="清空点色">×</button>
+        </div>
       </div>
       <div class="transport">
         <button id="playBtn" class="big-btn" disabled>▶ 播放</button>
@@ -103,6 +114,7 @@
         <tr><td>明度</td><td>音区高低</td><td>亮 = 高</td></tr>
         <tr><td>区域内最亮处的位置</td><td>旋律轮廓</td><td>旋律住在画面最亮处</td></tr>
         <tr><td>边缘 / 细节密度</td><td>节奏密度（近黑 = 休止）</td><td>笔触密的地方音也密</td></tr>
+        <tr><td>你后来画下的彩色笔迹</td><td>手绘声部</td><td>扫描位置 = 时间，高度 = 调内音高，颜色 = 乐器</td></tr>
       </tbody>
     </table>
     <p>硬规则保底：第 1 与最后 1 小节锁主和弦，每 4 小节拉向属和弦（终止式），所有和弦在调内，旋律强拍吸附和弦音。所以<b>保证协和，丑也丑得在调上</b>。随机性只留给力度与微小的时值抖动——同一幅画、同一个种子，永远召唤出同一首曲子。</p>
