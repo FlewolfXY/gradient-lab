@@ -73,7 +73,7 @@ function summarize(plan, tempo) {
 }
 
 /** No generated text is executed. Every returned action passes the shared validator. */
-export async function planMusicEdit(input, env = {}, { fetchImpl = fetch } = {}) {
+export async function planMusicEdit(input, env = {}, { fetchImpl = (...args) => globalThis.fetch(...args) } = {}) {
   const configuredModel = env.MODEL_NAME ?? 'deepseek-flash';
   const model = typeof configuredModel === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(configuredModel) ? configuredModel : 'deepseek-flash';
   const response = (status, message, extra = {}) => ({ status, summary: message, message, source: 'deepseek', model, ...extra });
@@ -84,14 +84,16 @@ export async function planMusicEdit(input, env = {}, { fetchImpl = fetch } = {})
   if (configuredModel !== model || (env.MODEL_ENDPOINT ?? ENDPOINT) !== ENDPOINT || typeof env.MODEL_API_KEY !== 'string' || !env.MODEL_API_KEY.trim() || /[\r\n]/.test(env.MODEL_API_KEY)) return response('unsupported', 'AI 编辑暂未配置好，请先使用快捷调整。');
 
   const controller = new AbortController();
-  let timedOut = false, timer;
+  let timedOut = false, timer, diagnosticStage = 'fetch-transport';
   try {
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => { timedOut = true; controller.abort(); reject(new Error('timeout')); }, TIMEOUT_MS);
     });
     const request = (async () => {
       const res = await fetchImpl(ENDPOINT, {
-        method: 'POST', redirect: 'error', signal: controller.signal,
+        // Older Workerd runtimes reject redirect:'error' as an unsupported mode.
+        // Manual is supported there and prevents any credential-bearing follow.
+        method: 'POST', redirect: 'manual', signal: controller.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.MODEL_API_KEY}` },
         body: JSON.stringify({
           model, temperature: 0, max_tokens: 650, stream: false, thinking: { type: 'disabled' },
@@ -101,17 +103,21 @@ export async function planMusicEdit(input, env = {}, { fetchImpl = fetch } = {})
       });
       // Never expose upstream bodies, errors, request headers or credentials.
       if (!res.ok) return { failed: res.status === 429 ? 'busy' : 'service' };
+      diagnosticStage = 'response-json';
       const raw = await res.text();
       if (raw.length > 32_768) throw new Error('response too large');
       return { body: JSON.parse(raw) };
     })();
     const { body, failed } = await Promise.race([request, timeout]);
     if (failed) return response('unsupported', failed === 'busy' ? 'AI 编辑正在忙，请稍后重试，或先使用快捷调整。' : 'AI 编辑暂时不可用，请稍后重试，或先使用快捷调整。');
+    diagnosticStage = 'invalid-shape';
     const usage = usageFrom(body), metadata = usage ? { usage } : {};
     if (body?.choices?.[0]?.finish_reason !== 'stop') return response('clarify', 'AI 没有给出完整的修改计划，请缩短要求后重试。', metadata);
     const content = body?.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || !content.trim() || content.length > 8192) throw new Error('invalid content');
+    diagnosticStage = 'content-json';
     const result = JSON.parse(content);
+    diagnosticStage = 'invalid-shape';
     if (!isObject(result)) throw new Error('invalid result');
     if (['clarify', 'unsupported'].includes(result.status)) {
       if (!onlyKeys(result, ['status', 'reason'])) throw new Error('invalid clarification');
@@ -132,8 +138,12 @@ export async function planMusicEdit(input, env = {}, { fetchImpl = fetch } = {})
     catch { return response('clarify', 'AI 提议超出了当前可控的修改范围，请换一个要求，或使用快捷调整。', metadata); }
     const summary = summarize(plan, tempo);
     return response('ready', summary, { plan, ...metadata });
-  } catch {
-    return response('unsupported', timedOut ? 'AI 编辑响应超时，请稍后重试，或先使用快捷调整。' : '这次没有得到有效的修改计划，请重试，或使用快捷调整。');
+  } catch (error) {
+    // Coarse stages and allowlisted names are safe diagnostics. Never include
+    // error.message/stack/cause, raw responses, user text or request metadata.
+    const name = ['Error', 'TypeError', 'SyntaxError', 'RangeError', 'AbortError', 'TimeoutError'].includes(error?.name) ? error.name : 'Error';
+    const diagnostic = { code: timedOut ? 'timeout' : diagnosticStage, name };
+    return response('unsupported', timedOut ? 'AI 编辑响应超时，请稍后重试，或先使用快捷调整。' : '这次没有得到有效的修改计划，请重试，或使用快捷调整。', { diagnostic });
   } finally {
     clearTimeout(timer);
   }

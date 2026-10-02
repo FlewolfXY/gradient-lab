@@ -27,7 +27,7 @@ test('DeepSeek receives only bounded text/settings; ready output is validated an
   assert.match(result.summary, /后半段.*伴奏/);
   assert.equal(JSON.stringify(result).includes(env.MODEL_API_KEY), false);
   assert.equal(observed.url, 'https://api.deepseek.com/chat/completions');
-  assert.equal(observed.request.redirect, 'error');
+  assert.equal(observed.request.redirect, 'manual');
   assert.equal(observed.request.headers.Authorization, `Bearer ${env.MODEL_API_KEY}`);
   const body = JSON.parse(observed.request.body);
   assert.deepEqual(body.response_format, { type: 'json_object' });
@@ -157,4 +157,44 @@ test('tempo summary reflects the actual clamped executor result and discloses ti
   assert.equal(result.status, 'ready');
   assert.match(result.summary, /50 → 50 BPM/);
   assert.match(result.summary, /播放时长/);
+});
+
+test('default fetch retains its global receiver in Workers-like runtimes', async () => {
+  const originalFetch = globalThis.fetch;
+  let receiver;
+  globalThis.fetch = function (...args) { receiver = this; return mockFetch({ status: 'ready', plan })(...args); };
+  try {
+    const result = await planMusicEdit(input, env);
+    assert.equal(result.status, 'ready');
+    assert.equal(receiver, globalThis);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('production diagnostics expose only bounded stage/name and never raw exception data', async () => {
+  const cases = [
+    ['fetch-transport', 'TypeError', async () => { throw new TypeError(env.MODEL_API_KEY); }],
+    ['response-json', 'SyntaxError', async () => new Response('not-json-' + env.MODEL_API_KEY)],
+    ['content-json', 'SyntaxError', mockFetch('not-json-' + env.MODEL_API_KEY)],
+    ['invalid-shape', 'Error', mockFetch({ status: 'execute-code', key: env.MODEL_API_KEY })],
+    ['fetch-transport', 'Error', async () => { throw { name: env.MODEL_API_KEY, message: env.MODEL_API_KEY }; }],
+  ];
+  for (const [code, name, fetchImpl] of cases) {
+    const result = await planMusicEdit(input, env, { fetchImpl });
+    assert.equal(result.status, 'unsupported');
+    assert.deepEqual(result.diagnostic, { code, name });
+    assert.equal(JSON.stringify(result).includes(env.MODEL_API_KEY), false);
+  }
+});
+
+test('upstream redirect is rejected without forwarding credentials or making another request', async () => {
+  let calls = 0;
+  const result = await planMusicEdit(input, env, { fetchImpl: async (_url, request) => {
+    calls++;
+    assert.equal(request.redirect, 'manual');
+    return new Response(null, { status: 302, headers: { Location: 'https://untrusted.example/' } });
+  } });
+  assert.equal(calls, 1);
+  assert.equal(result.status, 'unsupported');
+  assert.equal(result.plan, undefined);
+  assert.equal(JSON.stringify(result).includes(env.MODEL_API_KEY), false);
 });
