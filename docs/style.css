@@ -15,3 +15,5 @@
 .canvas-wrap{aspect-ratio:auto;height:clamp(300px,38vw,460px)}
 .canvas-wrap img{max-height:100%;max-width:100%;width:auto;height:auto}
 @media(max-width:720px){.canvas-wrap{height:min(95vw,380px);aspect-ratio:auto}.canvas-wrap img{max-height:100%}}
+
+@media(min-width:721px){.topbar{height:76px}.hero{padding-top:28px;padding-bottom:22px}.hero h1{font-size:42px}.canvas-wrap{height:clamp(300px,32vw,420px)}}

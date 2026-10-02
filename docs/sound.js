@@ -10,10 +10,10 @@ const PIANO_NOTES = ['A1', 'C2', 'F#2', 'C3', 'F#3', 'C4', 'F#4', 'C5', 'F#5', '
 const SAMPLE_TIMEOUT_MS = 8000;
 
 export const PRESETS = {
-  piano: { name: '钢琴', desc: '真钢琴采样，看清骨架' },
-  ice: { name: '冰蓝透明', desc: '钟鸣 · 玻璃 pad · 长混响' },
-  forest: { name: '潮湿森林', desc: '闷钢琴 · 木质 pad · 短混响' },
-  machine: { name: '冷紫机械', desc: '方波脉冲 · 合成低音 · 延迟' },
+  piano: { name: '钢琴', desc: '干净琴音 · 听见线条' },
+  ice: { name: '冰蓝透明', desc: '玻璃钟声 · 柔长回响' },
+  forest: { name: '潮湿森林', desc: '温暖木质 · 轻柔回声' },
+  machine: { name: '冷紫机械', desc: '跳动脉冲 · 电子颗粒' },
 };
 
 export const INKS = {
@@ -151,11 +151,16 @@ function buildInkRack(bus) {
     oscillator: { type: 'sine' }, modulation: { type: 'triangle' },
     envelope: { attack: 0.55, decay: 0.5, sustain: 0.72, release: 2.6 },
   });
-  const root = new Tone.MonoSynth({
-    volume: -8, oscillator: { type: 'sine' },
+  // A vertical stroke can place several root notes at the exact same beat.
+  // Give each attack its own MonoSynth voice rather than restarting one
+  // oscillator at an identical audio time (which Tone correctly rejects).
+  const root = new Tone.PolySynth(Tone.MonoSynth, {
+    volume: -11, oscillator: { type: 'sine' },
     envelope: { attack: 0.015, decay: 0.45, sustain: 0.55, release: 1.1 },
     filterEnvelope: { attack: 0.01, decay: 0.28, sustain: 0.3, release: 0.8, baseFrequency: 90, octaves: 2.2 },
   });
+
+  root.maxPolyphony = 8; // keep layered bass controlled on dense strokes
 
   spark.chain(sparkle, room, bus);
   water.chain(waterFilter, room, bus);
@@ -210,6 +215,7 @@ export class Engine {
     this._volume = 0.8;
     this._muted = false;
     this._outputActive = false;
+    this._lastInkPreviewAt = {};
     this.tracks = { melody: true, chords: true, bass: true, ink: true };
   }
 
@@ -377,11 +383,16 @@ export class Engine {
     const rack = this._ensureInkRack();
     await rack.ready;
     if (generation !== this._drawGeneration || !this.tracks.ink) return;
+    const time = Tone.now();
+    // Coalesced pointer events may all resume in the same microtask batch.
+    // Preview at most 25 notes/sec per ink; all marks remain in the score.
+    if (time - (this._lastInkPreviewAt[mark.kind] ?? -Infinity) < 0.04) return;
+    this._lastInkPreviewAt[mark.kind] = time;
     this._outputActive = true;
     this._updateOutput();
     const note = Tone.Frequency(mark.note, 'midi').toNote();
     const seconds = Math.max(0.12, mark.dur * 60 / (this.result?.tempo || 80));
-    rack.synths[mark.kind].triggerAttackRelease(note, seconds, Tone.now(), mark.vel / 127);
+    rack.synths[mark.kind].triggerAttackRelease(note, seconds, time, mark.vel / 127);
   }
 
   play(fromBeat = null) {

@@ -1,4 +1,4 @@
-import './app.js';
+import './app.js?v=20261002-2';
 // Small controls stay separate from the image/score lifecycle.
 const $ = id => document.getElementById(id);
 $('uploadTrigger').addEventListener('click', () => $('uploadInput').click());

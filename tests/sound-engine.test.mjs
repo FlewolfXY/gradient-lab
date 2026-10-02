@@ -28,6 +28,28 @@ class Node {
   releaseAll() { this.releases++; }
   triggerAttackRelease() { this.attacks = (this.attacks || 0) + 1; }
 }
+class MonoSynth extends Node {
+  triggerAttackRelease(note, duration, time) {
+    if (this.lastAttack !== undefined && time <= this.lastAttack + 1e-6) {
+      throw new Error('Start time must be strictly greater than previous start time');
+    }
+    this.lastAttack = time;
+    super.triggerAttackRelease(note, duration, time);
+  }
+}
+class PolySynth extends Node {
+  constructor(Voice = Node, options = {}) {
+    super(); this.Voice = Voice; this.options = options;
+    this.maxPolyphony = 32; this.voices = [];
+  }
+  triggerAttackRelease(note, duration, time, velocity) {
+    if (this.voices.length >= this.maxPolyphony) return;
+    const voice = new this.Voice();
+    voice.triggerAttackRelease(note, duration, time, velocity);
+    this.voices.push(voice);
+    super.triggerAttackRelease(note, duration, time, velocity);
+  }
+}
 class Gain extends Node {
   constructor(value) { super(); this.gain.value = value; }
 }
@@ -48,8 +70,8 @@ class Part extends Node {
 }
 globalThis.Tone = {
   Gain, Reverb, Sampler, Part,
-  Limiter: Node, PingPongDelay: Node, PolySynth: Node, FMSynth: Node,
-  Synth: Node, Filter: Node, MonoSynth: Node, Chorus: Node, AMSynth: Node, FeedbackDelay: Node,
+  Limiter: Node, PingPongDelay: Node, PolySynth, FMSynth: Node,
+  Synth: Node, Filter: Node, MonoSynth, Chorus: Node, AMSynth: Node, FeedbackDelay: Node,
   start: async () => {}, now: () => 0,
   getTransport: () => transport,
   getDraw: () => ({ schedule(callback) { drawQueue.push(callback); } }),
@@ -178,4 +200,37 @@ test('all four hand-drawn voices remain available, and stop cancels a pending pr
   await preview;
   assert.equal(engine.inkRack.synths.spark.attacks, undefined);
   assert.equal(engine.output.gain.value, 0);
+});
+
+
+test('same-beat root notes use independent bass voices without MonoSynth restart collisions', async () => {
+  reset();
+  const engine = new Engine();
+  engine.load(score()); await engine.setPreset('ice');
+  engine.setInks([36, 40, 43, 48].map(note => ({
+    kind: 'root', beat: 2, note, dur: 1.35, vel: 92, x: 0.5, y: 0.5,
+  })));
+  const root = engine.inkRack.synths.root;
+  assert.ok(root instanceof PolySynth);
+  assert.equal(root.Voice, MonoSynth);
+  assert.equal(root.maxPolyphony, 8);
+  const part = engine.inkParts[0];
+  assert.doesNotThrow(() => part.events.forEach(event => part.callback(2, event)));
+  assert.equal(root.voices.length, 4);
+});
+
+test('coalesced pointer previews are throttled per ink while the full score is retained', async () => {
+  reset();
+  const engine = new Engine();
+  engine.load(score()); await engine.setPreset('ice');
+  const marks = Array.from({ length: 20 }, (_, i) => ({
+    kind: 'root', beat: i / 8, note: 40, dur: 1, vel: 90, x: i / 20, y: 0.5,
+  }));
+  engine.setInks(marks);
+  await Promise.all(marks.map(mark => engine.triggerInk(mark)));
+  assert.equal(engine.inkRack.synths.root.attacks, 1);
+  assert.equal(engine.inkEvents.length, 20);
+  assert.equal(engine.inkParts[0].events.length, 20);
+  await engine.triggerInk({ ...marks[0], kind: 'spark' });
+  assert.equal(engine.inkRack.synths.spark.attacks, 1);
 });

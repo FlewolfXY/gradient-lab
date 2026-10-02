@@ -1,7 +1,7 @@
-import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js';
-import { buildMidi } from './midi.js';
-import { Engine, PRESETS, INKS } from './sound.js';
-import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js';
+import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js?v=20261002-2';
+import { buildMidi } from './midi.js?v=20261002-2';
+import { Engine, PRESETS, INKS } from './sound.js?v=20261002-2';
+import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js?v=20261002-2';
 
 const PAINTINGS = [
   { id: 'mist', title: '蓝雾', file: 'paintings/mist.jpg' },
@@ -81,7 +81,7 @@ function writeHash() {
   if (!state.painting || state.painting === 'upload') return;
   const p = new URLSearchParams();
   p.set('p', state.painting); p.set('s', state.scan);
-  if (state.scan === 'ripple' && state.focus) p.set('f', state.focus.map(v => v.toFixed(3)).join(','));
+  if (state.scan === 'ripple' && state.focus) p.set('f', state.focus.join(','));
   p.set('t', state.tempo);
   if (state.mode) p.set('m', state.mode);
   p.set('k', state.preset);
@@ -558,24 +558,23 @@ function exportPostcard() {
 
 let arming = null;
 async function armAudio() {
-  if (arming) {
-    await arming;
-    if (engine.presetName !== state.preset) return armAudio();
-    await engine.ready;
-    return;
+  if (!arming) {
+    const requestedPreset = state.preset;
+    arming = (async () => {
+      await engine.ensureStarted();
+      if (engine.presetName !== requestedPreset) {
+        if (state.preset === requestedPreset) setStatus(`加载音色「${PRESETS[requestedPreset].name}」……`, 'busy');
+        await engine.setPreset(requestedPreset);
+        if (state.preset === requestedPreset) setStatus('');
+      } else {
+        await engine.ready;
+      }
+    })().finally(() => { arming = null; });
   }
-  const requestedPreset = state.preset;
-  arming = (async () => {
-    await engine.ensureStarted();
-    if (engine.presetName !== requestedPreset) {
-      if (state.preset === requestedPreset) setStatus(`加载音色「${PRESETS[requestedPreset].name}」……`, 'busy');
-      await engine.setPreset(requestedPreset);
-      if (state.preset === requestedPreset) setStatus('');
-    } else {
-      await engine.ready;      // 预加载可能还在路上
-    }
-  })().finally(() => { arming = null; });
-  return arming;
+  await arming;
+  // A newer preset may have been selected while the first load was pending.
+  if (engine.presetName !== state.preset) return armAudio();
+  await engine.ready;
 }
 
 playBtn.addEventListener('click', async () => {
@@ -688,7 +687,8 @@ async function chooseOrigin(point) {
 }
 
 function addInkPoint(point, stroke) {
-  const [x, y] = point;
+  // Keep the drawn and shared coordinates identical (not only visually close).
+  const [x, y] = point.map(value => Math.round(value * 255) / 255);
   const previous = state.ink[state.ink.length - 1];
   if (previous && previous.stroke === stroke && Math.hypot(previous.x - x, previous.y - y) < 0.012) return;
   const kind = state.inkKind;
