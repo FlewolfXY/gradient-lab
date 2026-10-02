@@ -62,3 +62,28 @@ test('storage corruption and quota failures preserve existing data and return us
   const full = { getItem: () => '[]', setItem: () => { throw new Error('QuotaExceededError'); } };
   assert.throws(() => saveWork(work('x'), full), /本地空间/);
 });
+
+
+test('saved work round-trips local edits with exact scope and melody protection', () => {
+  const store = storage();
+  const editPlans = [
+    { scope: 'secondHalf', lockMelody: true, operations: [{ type: 'sparser', amount: 0.5 }] },
+    { scope: 'ending', lockMelody: false, operations: [{ type: 'fadeEnding', amount: 0.25 }] },
+  ];
+  saveWork({ ...work('edited'), editPlans }, store);
+  const restored = loadWorks(store)[0];
+  assert.equal(restored.editPlans.length, 2);
+  assert.equal(restored.editPlans[0].scope, 'secondHalf');
+  assert.equal(restored.editPlans[0].lockMelody, true);
+  assert.equal(restored.editPlans[1].lockMelody, false);
+  assert.equal(restored.editPlans[1].operations[0].amount, 0.25);
+  assert.deepEqual(restored.ink, loadWorks(store)[0].ink);
+});
+
+test('invalid saved edit plans cannot be accepted or silently truncate existing edits', () => {
+  const store = storage();
+  const plan = { scope: 'all', lockMelody: true, operations: [{ type: 'softer' }] };
+  assert.throws(() => saveWork({ ...work('x'), editPlans: Array(9).fill(plan) }, store));
+  assert.throws(() => saveWork({ ...work('x'), editPlans: [{ ...plan, operations: [{ type: 'run-script' }] }] }, store));
+  assert.equal(loadWorks(store).length, 0);
+});

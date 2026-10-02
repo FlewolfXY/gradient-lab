@@ -25,7 +25,7 @@
 - **声音 Gradient**：同一副 MIDI 骨架，一键切换 钢琴 / 冰蓝透明 / 潮湿森林 / 冷紫机械 四个世界。这是 Procreate Gradient Map 工作流的听觉版。
 - **可解释**：每一小节都有一行"为什么"——这块颜色的色相偏离全画基调多少、饱和度多高、于是变成了哪个和弦、属于哪种功能。报告末尾附五分钟乐理，只讲用到的概念。
 - **带走**：melody / chords / bass / painted / combined 五个 `.mid`，拖进 Logic、GarageBand、Ableton 各配一个乐器；含点色笔迹的标注图 `.png`；一条能复现当前画、读法、焦点、音色、种子的链接。
-- **隐私**：所有计算在浏览器里完成，上传的画不会离开你的设备。没有服务器。
+- **隐私**：图片分析、编辑执行和声音导出在浏览器本机完成。主动提交 AI 修改时，仅将文字与范围、速度等必要参数发送到独立服务与 DeepSeek；图片和音频不会上传。
 
 ![涟漪模式](docs/shots/ripple.png)
 
@@ -114,3 +114,17 @@ node --test --test-isolation=none tests/*.test.mjs
 ```
 
 交互灵感参考：Chrome Music Lab 的 [Kandinsky](https://musiclab.chromeexperiments.com/Kandinsky/)、[Paint with Music](https://magenta.withgoogle.com/paint-with-music)、[Blob Opera](https://artsandculture.google.com/experiment/blob-opera/AAHWrq360NcGbw)。暖纸色与轻量上手流程参考作者自己的 [孵豆公开版](https://hatchbeads.com/)。代码与素材均保留各自署名。
+
+
+## 可控共创更新（2026-10-03）
+
+- **局部编辑**：整首、前半段、后半段、结尾；默认锁定旋律音符，手绘声部保留。
+- **真实 DeepSeek 提案**：自然语言经服务端结构化规划与范围/旋律约束校验，再由浏览器执行固定动作。快捷按钮仍是本机规则。每次先 A/B 试听，再接受或取消；可撤回。
+- **带走声音**：20 秒、30 秒或完整一遍的立体声 WAV，保留当前音色、效果与手绘声部，提供文件内播放预览。
+- **可重现**：局部编辑随分享链接和本机收藏保存，MIDI/WAV 都来自当前修改后的乐谱。
+- **可观察**：仅当前标签页的操作记录，可手动导出；不存图片、文件名、输入原文，不自动上报。点击下载、选择用途不等于已真实使用。
+- **服务边界**：DeepSeek key 仅存在模型服务的秘密配置中；当前试验服务每日最多 40 次模型请求，单来源每日 20 次、每分钟 3 次。限额后本机编辑、收藏与导出仍可使用。
+
+[需求假设与模拟任务](research/2026-10-03-user-hypotheses.md)来自公开研究与产品推演，不是用户访谈。[真实模型合成用例检查](research/2026-10-03-live-model-eval.json)记录 12 条合成请求的一次运行，不是用户满意度或线上业务效果。构建时通过 53 项自动化回归；后续改动应重新运行测试。
+
+服务端规划器源码在 `server/planner.js`；`docs/model-config.js` 只有公开服务地址。模型负责提出方案，`docs/creative-edits.js` 负责有限动作、边界校验与执行。新增不支持的动作会要求澄清或拒绝，不会执行模型生成的代码。

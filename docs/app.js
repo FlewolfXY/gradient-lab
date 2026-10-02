@@ -1,7 +1,10 @@
-import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js?v=20261002-3';
-import { buildMidi } from './midi.js?v=20261002-3';
-import { Engine, PRESETS, INKS } from './sound.js?v=20261002-3';
-import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js?v=20261002-3';
+import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js?v=20261003-1';
+import { buildMidi } from './midi.js?v=20261003-1';
+import { Engine, PRESETS, INKS } from './sound.js?v=20261003-1';
+import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js?v=20261003-1';
+
+import { replayEditPlans, encodeEditPlans, decodeEditPlans, normalizeEditPlans } from './creative-edits.js?v=20261003-1';
+import { installCreativeStudio } from './creative-studio.js?v=20261003-1';
 
 const PAINTINGS = [
   { id: 'prism', title: '棱镜', file: 'paintings/prism.jpg' },
@@ -38,10 +41,15 @@ const state = {
   strokeSeq: 0,
   imageSource: '',
   loadVersion: 0,
+  editPlans: [],
+  editChanges: [],
 };
 const engine = new Engine();
 window.__gl = { state, engine };
 let playIntent = 0;
+let creative = null;
+let offlineBusy = false;
+const anyDialogOpen = () => Boolean(document.querySelector('dialog[open]'));
 
 // 音响起时在画上炸开的光点
 const sparks = [];
@@ -75,6 +83,8 @@ function readHash() {
   if (p.get('k') && PRESETS[p.get('k')]) state.preset = p.get('k');
   if (/^-?\d+$/.test(p.get('seed') || '')) state.seed = Number(p.get('seed')) >>> 0;
   state.ink = decodeInk(p.get('i'));
+  try { state.editPlans = decodeEditPlans(p.get('e') || ''); }
+  catch { state.editPlans = []; setStatus('分享中的修改记录无效，已打开原始乐谱。', 'err'); }
   state.strokeSeq = Math.max(0, ...state.ink.map(m => m.stroke));
 }
 function writeHash() {
@@ -87,6 +97,7 @@ function writeHash() {
   p.set('k', state.preset);
   if (state.seed !== null || state.result) p.set('seed', state.seed ?? state.result.seed);
   if (state.ink.length) p.set('i', encodeInk(state.ink));
+  if (state.editPlans.length) p.set('e', encodeEditPlans(state.editPlans));
   history.replaceState(null, '', '#' + p.toString());
 }
 
@@ -94,16 +105,21 @@ function writeHash() {
 
 let renderTimer = null;
 function requestRender(immediate = false) {
+  if (offlineBusy) return;
   clearTimeout(renderTimer);
   renderTimer = setTimeout(doRender, immediate ? 0 : 200);
 }
 
 function doRender() {
-  if (!state.analysis) return;
+  clearTimeout(renderTimer); renderTimer = null;
+  if (!state.analysis || offlineBusy) return;
   state.result = summon(state.analysis, {
     scan: state.scan, focus: state.scan === 'ripple' ? state.focus : null,
     tempo: state.tempo, mode: state.mode || null, seed: state.seed,
   });
+  state.seed = state.result.seed;
+  const edited = replayEditPlans(state.result, state.editPlans);
+  state.result = edited.result; state.editChanges = edited.changes;
   if (state.scan === 'ripple') state.focus = state.result.focus;
   updateInkMapping();
   engine.load(state.result);
@@ -120,6 +136,7 @@ function doRender() {
   writeHash();
   schedulePreload();
   if ($('saveBtn')) $('saveBtn').disabled = false;
+  creative?.update();
   if (state.resumeAfterRender) {
     state.resumeAfterRender = false;
     const version = state.loadVersion;
@@ -170,6 +187,7 @@ function buildDownloads() {
     state.blobUrls.push(url);
     const a = document.createElement('a');
     a.href = url; a.download = `${stem}-${name}`; a.textContent = label;
+    a.addEventListener('click', () => creative?.record('midi_download_clicked', { track: name.replace('.mid', '') }));
     if (name === 'combined.mid') a.className = 'primary-download';
     box.appendChild(a);
   });
@@ -231,6 +249,7 @@ function buildReport() {
       全画主色相 <b>${g.hue.toFixed(0)}°</b>（饱和度加权，灰色不投票）。
       冷暖 ${g.warmth.toFixed(2)}、明度 ${g.brightness.toFixed(2)} → 调式判定分 ${g.modeScore.toFixed(2)}（&gt;0.5 大调）→ <b>${r.tonic} ${modeCn}</b>。
       ${r.tempo} BPM，${r.bars} 小节，种子 ${r.seed}。
+      ${state.editPlans.length ? '<br><b>这份表记录原始读画依据；当前乐谱还应用了以下修改：</b>' + state.editChanges.map(escapeHtml).join('；') : ''}
     </p>
     <table class="bar-table">
       <thead><tr><th>小节</th><th>色相</th><th>饱和</th><th>明度</th><th>细节</th><th>和弦</th><th>级数</th><th class="why">为什么</th></tr></thead>
@@ -272,7 +291,7 @@ function updatePlaybackReadout(bar, beat, active) {
     const brightness = feat.val > 0.65 ? '画面较亮，旋律向高处走' : feat.val < 0.35 ? '画面较暗，旋律落在较低的音区' : '适中的亮度，让旋律停在中间音区';
     const detail = ['细节舒缓，音符留出呼吸', '细节渐多，节奏轻轻流动', '细节丰富，音符更密一些', '纹理最密，节奏也变得活泼'][Math.min(3, Math.floor(feat.edge * 4))];
     if ($('barLabel')) $('barLabel').textContent = `第 ${bar + 1} / ${r.bars} 小节 · ${chord.label}`;
-    if ($('barStory')) $('barStory').textContent = `${colorName(feat.hue, feat.sat)}：${hueStory}。${brightness}；${detail}。`;
+    if ($('barStory')) $('barStory').textContent = `${colorName(feat.hue, feat.sat)}：${hueStory}。${brightness}；${detail}。${state.editPlans.length ? ' 以上是原始读画依据；当前声音还保留了你的局部修改。' : ''}`;
     if ($('barSwatch')) $('barSwatch').style.background = hsvToCss(feat.hue, feat.sat, feat.val);
     nowChord.textContent = active && chord ? `${chord.label}（${chord.degree}）` : '';
     document.querySelectorAll('.chord-chip').forEach((chip, i) => {
@@ -373,7 +392,7 @@ function drawGeometry(ctx, W, H, geo, beat, playing, labels = false, scale = 1) 
 }
 
 function drawOverlay() {
-  if (!state.result) return;
+  if (!state.result || offlineBusy || creative?.comparing) return;
   const ctx = overlay.getContext('2d');
   const W = overlay.width / dpr, H = overlay.height / dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -570,6 +589,7 @@ function exportPostcard() {
 
 let arming = null;
 async function armAudio() {
+  if (offlineBusy) throw new Error('正在制作音频，请稍等。');
   if (!arming) {
     const requestedPreset = state.preset;
     arming = (async () => {
@@ -590,6 +610,7 @@ async function armAudio() {
 }
 
 playBtn.addEventListener('click', async () => {
+  if (offlineBusy || anyDialogOpen()) return;
   try {
     const intent = ++playIntent;
     const version = state.loadVersion;
@@ -599,6 +620,7 @@ playBtn.addEventListener('click', async () => {
     await armAudio();
     if (intent === playIntent && version === state.loadVersion && state.result) {
       playBtn.removeAttribute('aria-busy');
+      creative?.record('playback_started');
       engine.toggle();
     }
   } catch (e) {
@@ -685,6 +707,8 @@ function setTool(tool) {
 }
 
 async function chooseOrigin(point) {
+  if (offlineBusy || anyDialogOpen()) return;
+  creative?.changed();
   const intent = ++playIntent;
   const version = state.loadVersion;
   const audioReady = armAudio(); // 必须在用户手势内启动 AudioContext
@@ -706,6 +730,8 @@ async function chooseOrigin(point) {
 }
 
 function addInkPoint(point, stroke) {
+  if (offlineBusy || anyDialogOpen()) return;
+  creative?.changed();
   // Keep the drawn and shared coordinates identical (not only visually close).
   const [x, y] = point.map(value => Math.round(value * 255) / 255);
   const previous = state.ink[state.ink.length - 1];
@@ -722,7 +748,7 @@ function addInkPoint(point, stroke) {
   };
   state.ink.push(mark);
   if (state.ink.length > 240) state.ink.splice(0, state.ink.length - 240);
-  armAudio().then(() => engine.triggerInk(mark)).catch(err => setStatus('点色失败：' + err.message, 'err'));
+  armAudio().then(() => { if (!offlineBusy && !anyDialogOpen()) engine.triggerInk(mark); }).catch(err => setStatus('点色失败：' + err.message, 'err'));
   syncInk();
 }
 
@@ -767,7 +793,7 @@ document.querySelectorAll('.ink-swatch').forEach(btn => btn.addEventListener('cl
   if (state.result) {
     const kind = state.inkKind;
     const note = pointToPitch(0.5, kind);
-    armAudio().then(() => engine.triggerInk({ kind, note, dur: kind === 'mist' ? 1.2 : 0.4, vel: 64 }))
+    armAudio().then(() => { if (!offlineBusy && !anyDialogOpen()) engine.triggerInk({ kind, note, dur: kind === 'mist' ? 1.2 : 0.4, vel: 64 }); })
       .catch(e => setStatus('试听暂未启动：' + e.message, 'err'));
   }
 }));
@@ -815,6 +841,7 @@ $('rerollBtn').addEventListener('click', () => {
 $('shareBtn').addEventListener('click', async () => {
   if (state.painting === 'upload') { setStatus('上传的画只在你本地，链接无法带上它；换成内置画作即可分享。', 'err'); return; }
   writeHash();
+  creative?.record('share_requested');
   try {
     await navigator.clipboard.writeText(location.href);
     setStatus(state.ink.length ? '链接已复制，画作、读法、音色和你的笔迹都在里面。' : '链接已复制，打开即可还原这幅画的声音。');
@@ -853,6 +880,8 @@ PAINTINGS.forEach(p => {
 });
 
 async function loadImage(src, id, title, keepParams = false, restoredInk = []) {
+  if (offlineBusy) return false;
+  creative?.changed();
   const version = ++state.loadVersion;
   clearTimeout(renderTimer);
   clearTimeout(inkSyncTimer);
@@ -861,11 +890,14 @@ async function loadImage(src, id, title, keepParams = false, restoredInk = []) {
   if (id === 'upload') history.replaceState(null, '', location.pathname + location.search);
   state.title = String(title).slice(0, 120);
   state.imageSource = src;
-  if (!keepParams) { state.focus = null; state.seed = null; }
+  if (!keepParams) { state.focus = null; state.seed = null; state.editPlans = []; state.editChanges = []; }
+  previousRecipe = null;
+  if ($('undoSurpriseBtn')) $('undoSurpriseBtn').hidden = true;
   state.ink = cleanInk(restoredInk);
   state.strokeSeq = Math.max(0, ...state.ink.map(m => m.stroke));
   setTool('origin');
   state.analysis = null; state.result = null;
+  creative?.update();
   playBtn.removeAttribute('aria-busy');
   playBtn.disabled = true;
   if ($('saveBtn')) $('saveBtn').disabled = true;
@@ -930,15 +962,17 @@ $('uploadInput').addEventListener('change', e => {
 // 把图拖到页面任何地方
 const veil = $('dropVeil');
 let dragDepth = 0;
-document.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; veil.classList.add('on'); });
+document.addEventListener('dragenter', e => { e.preventDefault(); if (offlineBusy || anyDialogOpen()) return; dragDepth++; veil.classList.add('on'); });
 document.addEventListener('dragover', e => { e.preventDefault(); });
 document.addEventListener('dragleave', e => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; veil.classList.remove('on'); } });
 document.addEventListener('drop', e => {
   e.preventDefault(); dragDepth = 0; veil.classList.remove('on');
+  if (offlineBusy || anyDialogOpen()) return;
   const f = [...(e.dataTransfer.files || [])].find(x => x.type.startsWith('image/'));
   if (f) openFile(f);
 });
 document.addEventListener('paste', e => {
+  if (offlineBusy || anyDialogOpen()) return;
   const item = [...(e.clipboardData?.items || [])].find(x => x.type.startsWith('image/'));
   if (item) openFile(item.getAsFile());
 });
@@ -963,7 +997,8 @@ function setUploadThumb(src, title) {
 }
 
 function openFile(f) {
-  if (!f) return;
+  if (!f || offlineBusy || anyDialogOpen()) return;
+  creative?.record('image_uploaded');
   if (!/^image\/(jpeg|png|webp|gif|avif|bmp)$/.test(f.type)) {
     setStatus('请选择 JPG、PNG、WebP、GIF、AVIF 或 BMP 图片；动图会读入其中一帧。', 'err');
     return;
@@ -995,6 +1030,7 @@ function applySettings(settings) {
   state.scan = settings.scan; state.mode = settings.mode;
   state.tempo = settings.tempo; state.preset = settings.preset;
   state.seed = settings.seed ?? null;
+  if ('editPlans' in settings) state.editPlans = normalizeEditPlans(settings.editPlans || []);
   if ('focus' in settings) state.focus = settings.focus;
   setScan(state.scan); setMode(state.mode);
   tempoSlider.value = state.tempo; $('tempoVal').textContent = state.tempo;
@@ -1002,7 +1038,8 @@ function applySettings(settings) {
 }
 function currentSettings() {
   return { scan: state.scan, mode: state.mode, tempo: state.tempo, preset: state.preset,
-    seed: state.seed ?? state.result?.seed ?? null, focus: state.focus ? [...state.focus] : null };
+    seed: state.seed ?? state.result?.seed ?? null, focus: state.focus ? [...state.focus] : null,
+    editPlans: normalizeEditPlans(state.editPlans) };
 }
 async function changeRecipe(settings, description) {
   const intent = playIntent;
@@ -1072,6 +1109,7 @@ function renderSavedWorks(works) {
     detail.textContent = `${PRESETS[work.preset].name} · ${work.tempo} BPM · ${new Date(work.createdAt).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}`;
     open.append(thumb, name, detail);
     open.addEventListener('click', async () => {
+      creative?.record('work_restored');
       applySettings(work);
       if (work.painting === 'upload') {
         setUploadThumb(work.image, work.title);
@@ -1101,6 +1139,7 @@ $('saveBtn')?.addEventListener('click', () => {
       createdAt: Date.now(), painting: state.painting, title: state.title,
       image: imageForStorage(), ink: state.ink });
     renderSavedWorks(works);
+    creative?.record('work_saved');
     setStatus(`已收藏到本机小抽屉（${works.length}/8）。清除浏览器数据会移除它，喜欢的话也下载一份吧。`);
   } catch (e) { setStatus(e.message || '这次没能保存，仍可下载作品带走。', 'err'); }
 });
@@ -1108,6 +1147,7 @@ window.addEventListener('storage', e => { if (e.key === 'gradient-lab:sketchbook
 
 // Leave native buttons, sliders and inputs their own keyboard behavior.
 document.addEventListener('keydown', e => {
+  if (offlineBusy || anyDialogOpen()) return;
   if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target.closest('input, textarea, select, button, a, summary, [contenteditable="true"]')) return;
   if (!state.result) return;
@@ -1130,6 +1170,31 @@ document.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener(
     else window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
   }
 }));
+
+// All score-changing controls invalidate in-flight model proposals. Capture runs
+// before their individual handlers, including dynamically created gallery cards.
+document.addEventListener('click', event => {
+  if (event.target.closest('.preset-btn, .scan-btn, .mode-btn, .thumb, .saved-open, #rerollBtn, #surpriseBtn, #undoSurpriseBtn, #inkUndo, #inkClear')) creative?.changed();
+}, true);
+tempoSlider.addEventListener('input', () => creative?.changed(), true);
+
+creative = installCreativeStudio({
+  state, engine,
+  settleRender: () => { if (renderTimer && !offlineBusy) doRender(); },
+  snapshot: currentSettings,
+  restore: applySettings,
+  render: () => { clearTimeout(renderTimer); doRender(); },
+  stopPlayback: () => { playIntent++; state.resumeAfterRender = false; playBtn.removeAttribute('aria-busy'); engine.stop(); },
+  setOffline: value => { offlineBusy = value; },
+  prepareOffline: async () => {
+    playIntent++; state.resumeAfterRender = false; drawing = false;
+    clearTimeout(renderTimer); clearTimeout(inkSyncTimer);
+    engine.stop();
+    if (arming) await arming.catch(() => {});
+    await engine.ready;
+    engine.stop();
+  },
+});
 
 // ---------- 启动 ----------
 

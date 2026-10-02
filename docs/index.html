@@ -10,7 +10,7 @@
 <meta property="og:description" content="先听听，再添一笔。把一幅画变成能继续创作的音乐。">
 <meta property="og:image" content="https://flewolfxy.github.io/gradient-lab/paintings/mist.jpg">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css?v=20261002-3">
+<link rel="stylesheet" href="style.css?v=20261003-1">
 </head>
 <body>
 <a class="skip-link" href="#lab">跳到创作工作台</a>
@@ -56,6 +56,15 @@
       <div class="playback-progress"><div class="progress-track" aria-hidden="true"><span id="progressFill"></span></div><span id="timeReadout">0:00</span></div>
       <div class="listen-note"><span id="barSwatch" class="color-pebble" aria-hidden="true"></span><div><p id="barLabel" class="note-label">颜色做了这些决定</p><p id="barStory">按下播放，看看画面里的色彩，怎样变成耳边的旋律。</p></div><span class="note-star" aria-hidden="true">✧</span></div>
       <div class="status-line"><p class="status" id="status" role="status" aria-live="polite"></p><button id="undoSurpriseBtn" class="text-btn" hidden>回到刚才那一版 ↶</button></div>
+      <section class="creative-card" aria-labelledby="creativeTitle">
+        <div class="creative-heading"><div><p class="eyebrow">MAKE IT A LITTLE MORE YOU</p><h2 id="creativeTitle">喜欢这段旋律？再靠近一点。</h2></div><span class="local-badge">本机编辑</span></div>
+        <p class="creative-intro">让伴奏留白、把声音放轻，或让结尾慢慢落下。每次都能先听，再决定。</p>
+        <div class="creative-options"><label>改哪一段 <select id="editScope"><option value="all">整首</option><option value="firstHalf">前半段</option><option value="secondHalf">后半段</option><option value="ending">最后 4 小节</option></select></label><label class="lock-label"><input type="checkbox" id="lockMelody" checked> 保留旋律音符</label></div>
+        <div class="edit-chips" role="group" aria-label="音乐修改"><button data-edit="sparser">留一点空白</button><button data-edit="softer">轻一点</button><button data-edit="fadeEnding">结尾慢慢落下</button><button data-edit="slower">整首慢一点</button><button data-edit="airy">换成雾气般的音色</button></div>
+        <details class="intent-details"><summary>也可以说说，想怎么改 <span>DeepSeek · AI 提案</span></summary><form id="editIntentForm"><label class="sr-only" for="editIntent">描述音乐修改</label><textarea id="editIntent" rows="2" maxlength="180" placeholder="例如：后半段轻一点，保留旋律"></textarea><button class="save-btn" type="submit">看看会改什么 ↗</button></form><p class="tip">只将这条修改文字与范围、速度等参数发给 DeepSeek；图片和声音留在本机。AI 只提出可试听的方案，由你决定是否留下。</p></details>
+        <p id="editFeedback" class="edit-feedback" role="status" aria-live="polite">旋律锁定时，只调整伴奏；手绘笔迹始终保留。整首变速会一起改变播放快慢。</p>
+        <div class="edit-history"><p id="editHistory"></p><button id="undoEditBtn" class="text-btn" hidden>撤回上一次修改 ↶</button></div>
+      </section>
       <p class="canvas-footnote">选一种画笔，在画上点或划。画得越高，声音越高。<span class="keyboard-hint"><kbd>空格</kbd> 播放 / 暂停</span></p>
     </section>
 
@@ -76,7 +85,7 @@
 
   <section id="collection" class="collection" aria-labelledby="collectionTitle"><div class="section-heading collection-heading"><div><p class="eyebrow">LITTLE THINGS YOU MADE</p><h2 id="collectionTitle">我的小曲</h2></div><span class="collection-note">只存在这台设备 · 最多 8 首</span></div><div id="savedWorks" class="saved-works"><p class="saved-empty">喜欢哪一刻，就把它收进来。下次回来，还能接着画。</p></div></section>
 
-  <section class="takeaway"><div><p class="eyebrow">TAKE A LITTLE MUSIC HOME</p><h2>把这首小曲带走。</h2><p>保存一张音乐明信片，或把 MIDI 带进 GarageBand、Logic 等工具继续创作。</p><small>明信片是一张图片；MIDI 保存音符，音色由你使用的音乐软件决定。</small></div><div id="downloads" class="downloads"></div></section>
+  <section class="takeaway" id="takeaway"><div><p class="eyebrow">TAKE A LITTLE MUSIC HOME</p><h2>让这幅画的声音，跟你走。</h2><p>先试听一段 WAV，直接保存到设备或放进你的作品里。</p><div class="audio-export-controls"><label for="exportLength">带走多长？</label><select id="exportLength"><option value="20">开头 20 秒</option><option value="30">开头 30 秒</option><option value="full">完整一遍 + 余音</option></select><button id="exportAudioBtn" class="big-btn" disabled>制作音频 WAV ↓</button></div><small>保留当前音色、修改和手绘声音；包含全部声部，不受试听静音影响。短片段会在末尾淡出。</small></div><div><p class="export-secondary-label">也可以继续编曲，或留张明信片</p><div id="downloads" class="downloads"></div></div></section>
 
   <details id="scoreDetails" class="disclosure score-details"><summary><span>这幅画为什么这样唱？<small>逐小节看看颜色与和弦的关系</small></span><span class="details-plus" aria-hidden="true">＋</span></summary><div class="details-content"><div class="chord-strip" id="chordStrip" aria-label="选择小节播放"></div><section class="report" id="report" aria-label="逐小节音乐解释"></section></div></details>
 
@@ -84,13 +93,18 @@
       <details id="why" class="disclosure about-details"><summary><span>好奇里面的规则？<small>映射方式、边界与五分钟乐理</small></span><span class="details-plus" aria-hidden="true">＋</span></summary><div class="details-content prose"><p>这些是为创作设计的映射规则，不是颜色与情绪之间唯一或客观的对应。算法给一个起点，你来决定喜欢什么。</p><div class="table-scroll"><table class="map-table"><thead><tr><th>画面</th><th>音乐</th><th>设计直觉</th></tr></thead><tbody><tr><td>全画主色相</td><td>调的主音</td><td>色环与五度圈都是圆，相邻色相走到相邻的调</td></tr><tr><td>明度与冷暖</td><td>大调 / 小调</td><td>为不同画面给出一个初始心情，随时可以手动改</td></tr><tr><td>扫描方向</td><td>时间轴</td><td>画面可以像卷轴、瀑布，或一圈圈荡开的水面</td></tr><tr><td>区域偏离基调的程度</td><td>和弦功能</td><td>相近像停留，差异像走远，再逐渐回到起点</td></tr><tr><td>饱和度</td><td>三和弦、七和弦、九和弦</td><td>色彩浓一点，和声层次也多一点</td></tr><tr><td>明度与亮处的位置</td><td>音区与旋律轮廓</td><td>明亮的地方，旋律向上走</td></tr><tr><td>边缘 / 细节密度</td><td>节奏密度</td><td>笔触密的地方音也密，近黑区域给旋律留白</td></tr><tr><td>手绘笔迹</td><td>独立声部</td><td>位置决定时间，高度决定调内音高，颜色决定乐器</td></tr></tbody></table></div><p>首尾回到主和弦，每四小节形成一个小句子，旋律强拍靠近和弦音。同一幅画、同一组参数与种子，会得到同一段音乐。</p><p>一个仍在探索的问题：当两种颜色势均力敌时，平均色相可能落在画面里不存在的颜色上。现在的规则是一种读法，你也可以通过手动调式和不同扫描方向听另一种解释。</p></div></details>
   </section>
   <details id="layers" class="disclosure about-details"><summary><span>另一间实验室：音乐解剖台<small>把声音拆成可以看的图层</small></span><span class="details-plus" aria-hidden="true">＋</span></summary><div class="details-content prose"><p>Score → Layers 将音频拆成波形、音高谱、和弦候选与段落，帮助你观察声音里的结构。目前是随仓库提供的 Python 本地工具。</p><a id="xrayLink" href="https://github.com/FlewolfXY/gradient-lab/tree/main/audio-xray" target="_blank" rel="noopener">查看本地运行方式 ↗</a></div></details>
+  <details class="disclosure about-details" id="trialNotes"><summary><span>这次创作的小脚印<small>本机记录 · 可自行导出给开发者</small></span></summary><div class="details-content prose"><p>仅在当前标签页记录操作名称和相对用时；不记录图片、文件名或你输入的文字，也不会自动发送。它能帮助回看哪里顺手、哪里卡住，不能代表真实用户增长。</p><p id="trialSummary"></p><button id="exportTrialBtn" class="text-btn">导出本次体验记录 JSON ↓</button></div></details>
   <footer><a class="footer-brand" href="https://github.com/FlewolfXY/gradient-lab" target="_blank" rel="noopener">Gradient Lab <span>by Flewolf ↗</span></a><p>让一点好奇心，长成一点自己的东西。</p><small>音频引擎 Tone.js · 钢琴采样 Salamander Grand Piano <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener">CC BY 3.0</a></small></footer>
 </div>
 <div class="drop-veil" id="dropVeil"><span>把画放在这里，听听它的声音。<small>图片只在本机处理</small></span></div>
-<dialog id="postcardDialog" class="postcard-dialog" aria-labelledby="postcardTitle"><div class="postcard-header"><div><p class="eyebrow">A LITTLE KEEPSAKE</p><h2 id="postcardTitle">给这一刻，留张明信片。</h2></div><button id="postcardClose" class="icon-btn" aria-label="关闭明信片预览">×</button></div><img id="postcardPreview" alt="音乐明信片预览"><div class="postcard-actions"><p>这是一张静态图片。想把音符一起带走，可以再下载 MIDI。</p><a id="postcardDownload" class="big-btn" download>保存明信片 PNG ↓</a></div></dialog>
+<dialog id="postcardDialog" class="postcard-dialog" aria-labelledby="postcardTitle"><div class="postcard-header"><div><p class="eyebrow">A LITTLE KEEPSAKE</p><h2 id="postcardTitle">给这一刻，留张明信片。</h2></div><button id="postcardClose" class="icon-btn" aria-label="关闭明信片预览">×</button></div><img id="postcardPreview" alt="音乐明信片预览"><div class="postcard-actions"><p>这是一张静态图片。想把声音一起带走，可以制作 WAV；继续编曲则可下载 MIDI。</p><a id="postcardDownload" class="big-btn" download>保存明信片 PNG ↓</a></div></dialog>
+
+<dialog id="editDialog" class="studio-dialog edit-dialog" aria-labelledby="editDialogTitle"><p class="eyebrow">KEEP WHAT YOU LOVE</p><h2 id="editDialogTitle">先听听，再决定。</h2><ul id="editChanges"></ul><p id="editProtection" class="tip"></p><div class="compare-buttons"><button id="listenBefore" class="compare-btn">A · 听修改前</button><button id="listenAfter" class="compare-btn">B · 听修改后</button><button id="editPreviewStop" class="icon-btn" aria-label="停止对比试听">■</button></div><p id="compareStatus" role="status" aria-live="polite">从修改处试听 8 秒。你的原版还在。</p><div class="dialog-actions"><button id="discardEdit" class="text-btn">回到原版</button><button id="acceptEdit" class="big-btn">喜欢，留下这版 ✓</button></div></dialog>
+<dialog id="audioDialog" class="studio-dialog audio-dialog" aria-labelledby="audioDialogTitle"><div class="postcard-header"><div><p class="eyebrow">A LITTLE PIECE OF SOUND</p><h2 id="audioDialogTitle">把声音装进口袋。</h2></div><button id="audioClose" class="icon-btn" aria-label="关闭音频预览">×</button></div><div id="audioMaking" class="audio-making"><span aria-hidden="true">♫</span><p id="audioProgress" role="status" aria-live="polite">正在准备声音…</p></div><div id="audioReady" hidden><p id="audioDescription"></p><audio id="audioPreview" controls preload="metadata"></audio><a id="audioDownload" class="big-btn" download>保存音频 WAV ↓</a><p id="audioNotice" class="tip"></p><div class="use-feedback"><p>这段声音，准备放在哪里？<small>可选，仅记在本机，不会发送。</small></p><div><button data-use="visual-work">我的画 / 视频</button><button data-use="keep">先留着喜欢</button><button data-use="not-yet">还想再改改</button></div><p id="useFeedbackMessage" role="status"></p></div></div></dialog>
+
 <noscript><p class="noscript-note">这个小作坊需要 JavaScript 才能把画面变成音乐。请在浏览器中启用它，再来听听。</p></noscript>
 <script src="vendor/Tone-15.1.22.js"></script>
-<script type="module" src="app.js?v=20261002-3"></script>
-<script type="module" src="studio-controls.js?v=20261002-3"></script>
+<script type="module" src="app.js?v=20261003-1"></script>
+<script type="module" src="studio-controls.js?v=20261003-1"></script>
 </body>
 </html>

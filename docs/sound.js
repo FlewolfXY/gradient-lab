@@ -44,7 +44,8 @@ function pianoFallback(release = 1.2) {
   });
 }
 
-function buildPreset(name, useSamples = true) {
+// Shared with offline export so saved audio uses the same instruments/effects.
+export function buildPreset(name, useSamples = true) {
   const makePiano = useSamples ? pianoSampler : pianoFallback;
   const bus = new Tone.Gain(1);
   const nodes = [bus];
@@ -130,7 +131,7 @@ function buildPreset(name, useSamples = true) {
   };
 }
 
-function buildInkRack(bus) {
+export function buildInkRack(bus) {
   const room = new Tone.Reverb({ decay: 4.5, wet: 0.42 });
   const sparkle = new Tone.PingPongDelay({ delayTime: '8n.', feedback: 0.22, wet: 0.18 });
   const waterFilter = new Tone.Filter(3400, 'lowpass');

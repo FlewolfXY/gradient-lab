@@ -1,3 +1,5 @@
+import { normalizeEditPlans } from './creative-edits.js?v=20261003-1';
+
 // Local-only sketchbook. Keep the payload bounded, validate imported data,
 // and never silently discard an old piece when browser storage is full.
 const KEY = 'gradient-lab:sketchbook:v1';
@@ -54,7 +56,10 @@ function cleanWork(work) {
   const imageOK = typeof work.image === 'string' && work.image.length < 700000 &&
     /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(work.image);
   if (work.painting === 'upload' && !imageOK) return null;
+  let editPlans;
+  try { editPlans = normalizeEditPlans(work.editPlans || []); } catch { return null; }
   return {
+    editPlans,
     id: work.id.slice(0, 80), title: work.title.slice(0, 120),
     createdAt: Number.isFinite(work.createdAt) ? work.createdAt : Date.now(),
     painting: work.painting, image: imageOK ? work.image : null,
