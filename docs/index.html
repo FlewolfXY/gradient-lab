@@ -10,7 +10,7 @@
 <meta property="og:description" content="先听听，再添一笔。把一幅画变成能继续创作的音乐。">
 <meta property="og:image" content="https://flewolfxy.github.io/gradient-lab/paintings/mist.jpg">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css?v=20261002-2">
+<link rel="stylesheet" href="style.css?v=20261002-3">
 </head>
 <body>
 <a class="skip-link" href="#lab">跳到创作工作台</a>
@@ -67,6 +67,7 @@
         <div class="param-row"><label for="tempoSlider">快一点，慢一点</label><b><span id="tempoVal">80</span> <small>BPM</small></b><input type="range" id="tempoSlider" min="50" max="120" value="80"></div>
         <h3>旋律的心情</h3><div class="btn-row"><button class="opt mode-btn active" data-mode="">听画的</button><button class="opt mode-btn" data-mode="major">明亮 · 大调</button><button class="opt mode-btn" data-mode="minor">内敛 · 小调</button></div>
         <h3>拆开听一听</h3><div class="btn-row mixer" aria-label="声部开关"><button class="opt active" data-track="melody" aria-pressed="true">旋律</button><button class="opt active" data-track="chords" aria-pressed="true">和弦</button><button class="opt active" data-track="bass" aria-pressed="true">低音</button><button class="opt active" data-track="ink" aria-pressed="true">我的笔迹</button></div>
+        <p class="tip">声部开关只影响试听，收藏与导出保留完整乐谱。</p>
         <button class="text-btn reroll" id="rerollBtn">↻ 换点演奏表情</button>
       </div></details>
       <div class="keep-card"><span class="step-number">03</span><div><h2>留住这一刻</h2><p>给喜欢的小曲留个位置。</p></div><button id="saveBtn" class="save-btn">＋ 收进我的小曲</button><button id="shareBtn" class="text-btn" title="分享内置画作、参数与手绘笔迹">复制可重现的链接 ↗</button></div>
@@ -86,9 +87,10 @@
   <footer><a class="footer-brand" href="https://github.com/FlewolfXY/gradient-lab" target="_blank" rel="noopener">Gradient Lab <span>by Flewolf ↗</span></a><p>让一点好奇心，长成一点自己的东西。</p><small>音频引擎 Tone.js · 钢琴采样 Salamander Grand Piano <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener">CC BY 3.0</a></small></footer>
 </div>
 <div class="drop-veil" id="dropVeil"><span>把画放在这里，听听它的声音。<small>图片只在本机处理</small></span></div>
+<dialog id="postcardDialog" class="postcard-dialog" aria-labelledby="postcardTitle"><div class="postcard-header"><div><p class="eyebrow">A LITTLE KEEPSAKE</p><h2 id="postcardTitle">给这一刻，留张明信片。</h2></div><button id="postcardClose" class="icon-btn" aria-label="关闭明信片预览">×</button></div><img id="postcardPreview" alt="音乐明信片预览"><div class="postcard-actions"><p>这是一张静态图片。想把音符一起带走，可以再下载 MIDI。</p><a id="postcardDownload" class="big-btn" download>保存明信片 PNG ↓</a></div></dialog>
 <noscript><p class="noscript-note">这个小作坊需要 JavaScript 才能把画面变成音乐。请在浏览器中启用它，再来听听。</p></noscript>
 <script src="vendor/Tone-15.1.22.js"></script>
-<script type="module" src="app.js?v=20261002-2"></script>
-<script type="module" src="studio-controls.js?v=20261002-2"></script>
+<script type="module" src="app.js?v=20261002-3"></script>
+<script type="module" src="studio-controls.js?v=20261002-3"></script>
 </body>
 </html>

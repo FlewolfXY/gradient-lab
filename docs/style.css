@@ -17,3 +17,8 @@
 @media(max-width:720px){.canvas-wrap{height:min(95vw,380px);aspect-ratio:auto}.canvas-wrap img{max-height:100%}}
 
 @media(min-width:721px){.topbar{height:76px}.hero{padding-top:28px;padding-bottom:22px}.hero h1{font-size:42px}.canvas-wrap{height:clamp(300px,32vw,420px)}}
+
+.postcard-dialog{width:min(500px,calc(100vw - 30px));max-height:92vh;border:1px solid #dfd3bf;background:#f7f1e6;border-radius:22px;padding:23px;color:var(--text);box-shadow:0 25px 100px #34261540;overflow:auto}.postcard-dialog::backdrop{background:#332c266e;backdrop-filter:blur(5px)}.postcard-header{display:flex;gap:20px;align-items:center;justify-content:space-between;margin-bottom:16px}.postcard-header .eyebrow{font-size:8px;margin-bottom:4px}.postcard-header h2{font-family:"Songti SC",serif;font-size:22px;font-weight:600;margin:0}.postcard-dialog>img{width:100%;max-height:60vh;object-fit:contain;display:block;filter:drop-shadow(0 5px 8px #66513420)}.postcard-actions p{font-size:10px;color:#958771;line-height:1.8;margin:14px 0}.postcard-actions .big-btn{display:block;text-align:center;text-decoration:none;font-size:12px;padding:12px}.big-btn[aria-busy=true]{opacity:.75}
+
+/* Keep supporting text comfortably readable on the paper background. */
+.preset-btn{font-size:12px;min-height:78px}.preset-btn small{font-size:10.5px;color:#887a67}.tip{font-size:11px;color:#8e806c}.privacy-note{font-size:10.5px;color:#928571}.thumb span{font-size:11px}.upload-btn,.save-btn{font-size:12px}.keep-card h2{font-size:13px}.keep-card p{font-size:11px}.listen-note p:not(.note-label){font-size:13px}.note-label,.key-readout,.canvas-footnote{font-size:11px}.canvas-footnote{color:#8f816e}.collection-note{color:#91836e}.preset-btn small{line-height:1.55}

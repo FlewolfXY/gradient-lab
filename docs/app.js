@@ -1,11 +1,11 @@
-import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js?v=20261002-2';
-import { buildMidi } from './midi.js?v=20261002-2';
-import { Engine, PRESETS, INKS } from './sound.js?v=20261002-2';
-import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js?v=20261002-2';
+import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js?v=20261002-3';
+import { buildMidi } from './midi.js?v=20261002-3';
+import { Engine, PRESETS, INKS } from './sound.js?v=20261002-3';
+import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js?v=20261002-3';
 
 const PAINTINGS = [
-  { id: 'mist', title: '蓝雾', file: 'paintings/mist.jpg' },
   { id: 'prism', title: '棱镜', file: 'paintings/prism.jpg' },
+  { id: 'mist', title: '蓝雾', file: 'paintings/mist.jpg' },
   { id: 'garden', title: '花园', file: 'paintings/garden.jpg' },
   { id: 'live', title: 'LIVE', file: 'paintings/live.jpg' },
 ];
@@ -547,10 +547,22 @@ function exportPostcard() {
   cv.toBlob(blob => {
     if (!blob) { setStatus('明信片暂时没有生成，请再试一次。', 'err'); return; }
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url;
-    a.download = `${state.title.replace(/[\\/:*?"<>|]/g, '_')}-音乐明信片.png`;
-    a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
-    setStatus('音乐明信片已交给浏览器下载；声音本身可用完整 MIDI 一起带走。');
+    const dialog = $('postcardDialog');
+    const preview = $('postcardPreview');
+    const link = $('postcardDownload');
+    const previousFocus = document.activeElement;
+    preview.src = url;
+    preview.alt = `${state.title}的音乐明信片`;
+    link.href = url;
+    link.download = `${state.title.replace(/[\\/:*?"<>|]/g, '_')}-音乐明信片.png`;
+    $('postcardClose').onclick = () => dialog.close();
+    dialog.onclose = () => {
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      previousFocus?.focus();
+    };
+    link.onclick = () => setStatus('明信片已交给浏览器保存。想继续编曲，也可以带走完整 MIDI。');
+    dialog.showModal();
+    setStatus('你的音乐明信片做好了。');
   }, 'image/png');
 }
 
@@ -582,15 +594,22 @@ playBtn.addEventListener('click', async () => {
     const intent = ++playIntent;
     const version = state.loadVersion;
     if (engine.playing) { engine.pause(); return; }
+    playBtn.setAttribute('aria-busy', 'true');
+    playBtn.textContent = '准备声音…';
     await armAudio();
-    if (intent === playIntent && version === state.loadVersion && state.result) engine.toggle();
+    if (intent === playIntent && version === state.loadVersion && state.result) {
+      playBtn.removeAttribute('aria-busy');
+      engine.toggle();
+    }
   } catch (e) {
+    playBtn.removeAttribute('aria-busy');
+    playBtn.textContent = '▶ 再试一次';
     setStatus('音频启动失败：' + e.message, 'err');
   }
 });
-stopBtn.addEventListener('click', () => { playIntent++; state.resumeAfterRender = false; engine.stop(); });
+stopBtn.addEventListener('click', () => { playIntent++; playBtn.removeAttribute('aria-busy'); state.resumeAfterRender = false; engine.stop(); });
 engine.onState = (playing) => {
-  playBtn.textContent = playing ? '❚❚ 暂停' : '▶ 听听这幅画';
+  playBtn.textContent = playing ? '❚❚ 暂停' : playBtn.hasAttribute('aria-busy') ? '准备声音…' : '▶ 听听这幅画';
   playBtn.setAttribute('aria-pressed', String(playing));
   lastPlaybackBar = -1;
   if (playing && !state.everPlayed) { state.everPlayed = true; hint.hidden = true; }
@@ -847,6 +866,7 @@ async function loadImage(src, id, title, keepParams = false, restoredInk = []) {
   state.strokeSeq = Math.max(0, ...state.ink.map(m => m.stroke));
   setTool('origin');
   state.analysis = null; state.result = null;
+  playBtn.removeAttribute('aria-busy');
   playBtn.disabled = true;
   if ($('saveBtn')) $('saveBtn').disabled = true;
   state.resumeAfterRender = engine.playing || state.resumeAfterRender;
@@ -1099,6 +1119,17 @@ overlay.setAttribute('aria-label', '音乐画布。按回车从画面中心开�
 overlay.addEventListener('keydown', e => {
   if (e.key === 'Enter' && state.result) { e.preventDefault(); chooseOrigin(state.focus || [0.5, 0.5]); }
 });
+
+// Section navigation should not erase the reproducible composition in the URL.
+document.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener('click', e => {
+  const id = link.getAttribute('href').slice(1);
+  const target = id ? $(id) : null;
+  if (!id || target) {
+    e.preventDefault();
+    if (target) target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+    else window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
+  }
+}));
 
 // ---------- 启动 ----------
 
