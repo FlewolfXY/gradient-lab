@@ -16,7 +16,7 @@
 | **Paint → Score**（`docs/`） | 一幅画 → 一段能听、能下载 MIDI、能逐小节解释的音乐 | 纯前端，公开可玩 |
 | **Score → Layers**（`audio-xray/`） | 一段音频 → 波形 / CQT / Mel / 十二音级色带 / 三段响度 / 和弦候选 / 段落 / 自相似矩阵的"图层面板" | Python 本地工具 |
 
-`paint-to-midi/` 是 Paint → Score 的 Python 原型（CLI + Flask），前端版从它移植而来，两者算法一致。
+`paint-to-midi/` 是 Paint → Score 的 Python 原型（CLI + Flask），前端版从它移植而来；后续前端的图像边界处理、交互与导出验证独立演进。
 
 ## Paint → Score 能做什么
 
@@ -44,7 +44,7 @@
 | 区域内最亮处的位置 | 旋律轮廓 | 旋律住在画面最亮处 |
 | 边缘 / 细节密度 | 节奏密度（近黑 = 休止） | 笔触密的地方音也密 |
 
-硬规则保底：第 1 与最后 1 小节锁主和弦；每 4 小节拉向属和弦（终止式）；所有和弦在调内；旋律强拍吸附和弦音；相邻音跨度不超过五度。所以**保证协和，丑也丑得在调上**。随机性只留给力度与微小的时值抖动——同一幅画、同一个种子，永远召唤出同一首曲子。
+硬规则保底：第 1 与最后 1 小节锁主和弦；每 4 小节拉向属和弦（终止式）；三和弦骨架在调内；旋律强拍吸附和弦音；相邻音跨度不超过五度。以调内三和弦为骨架，七音与九音增加和声色彩。随机性只留给力度与微小的时值抖动——同一幅画、同一个种子，永远召唤出同一首曲子。
 
 ![逐小节报告](docs/shots/report.png)
 
@@ -93,3 +93,22 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 Python 侧：numpy、Pillow、mido、librosa、Flask。
 
 画作均为作者本人作品。
+
+
+## Warm Studio 更新（2026-10）
+
+- 奶油纸面工作台，先听再探索；扫描、调式和声部控制渐进展开。
+- 播放中的当前小节解释、音量与试听声部开关、键盘播放和减少动态效果支持。
+- 三个可撤回的灵感配方；保留原图和笔迹。
+- 本机小曲收藏（最多 8 首，上传图压缩后仅在本机保存）；音乐明信片 PNG；可继续编辑的分轨与合并 MIDI。
+- 内置画作分享链接包含参数和手绘笔迹。上传图不会被传到服务器，不能通过链接分享，请使用本机收藏或导出。
+- Tone.js 与精简钢琴采样随站点提供，避免第三方 CDN 阻断。采样失败时使用合成琴音并提示。署名见 `docs/audio/salamander/ATTRIBUTION.md`。
+- 声部开关只影响试听，MIDI 导出保留完整音轨。
+
+静态站仍没有构建步骤。纯逻辑回归检查：
+
+```bash
+node --test --test-isolation=none tests/*.test.mjs
+```
+
+交互灵感参考：Chrome Music Lab 的 [Kandinsky](https://musiclab.chromeexperiments.com/Kandinsky/)、[Paint with Music](https://magenta.withgoogle.com/paint-with-music)、[Blob Opera](https://artsandculture.google.com/experiment/blob-opera/AAHWrq360NcGbw)。暖纸色与轻量上手流程参考作者自己的 [孵豆公开版](https://hatchbeads.com/)。代码与素材均保留各自署名。

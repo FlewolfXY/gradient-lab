@@ -3,9 +3,11 @@
  * 同一份 MIDI 骨架，一键换一个世界——这是 Procreate 里 Gradient Map 的听觉版。
  */
 
-const SALAMANDER = 'https://tonejs.github.io/audio/salamander/';
-const PIANO_NOTES = ['A1', 'C2', 'D#2', 'F#2', 'A2', 'C3', 'D#3', 'F#3', 'A3',
-  'C4', 'D#4', 'F#4', 'A4', 'C5', 'D#5', 'F#5', 'A5', 'C6', 'D#6', 'F#6', 'A6', 'C7'];
+// Keep the runtime and a compact piano bank on the same origin: no CDN is
+// required to hear the first note. Tone interpolates between sampled notes.
+const SALAMANDER = new URL('./audio/salamander/', import.meta.url).href;
+const PIANO_NOTES = ['A1', 'C2', 'F#2', 'C3', 'F#3', 'C4', 'F#4', 'C5', 'F#5', 'C6', 'F#6', 'C7'];
+const SAMPLE_TIMEOUT_MS = 8000;
 
 export const PRESETS = {
   piano: { name: '钢琴', desc: '真钢琴采样，看清骨架' },
@@ -24,10 +26,26 @@ export const INKS = {
 function pianoSampler(release = 1.2) {
   const urls = {};
   PIANO_NOTES.forEach(n => urls[n] = n.replace('#', 's') + '.mp3');
-  return new Tone.Sampler({ urls, release, baseUrl: SALAMANDER });
+  let resolve, reject;
+  const ready = new Promise((yes, no) => { resolve = yes; reject = no; });
+  const sampler = new Tone.Sampler({
+    urls, release, baseUrl: SALAMANDER, onload: resolve, onerror: reject,
+  });
+  sampler.sampleReady = ready;
+  return sampler;
 }
 
-function buildPreset(name) {
+function pianoFallback(release = 1.2) {
+  return new Tone.PolySynth(Tone.FMSynth, {
+    harmonicity: 1, modulationIndex: 1.2,
+    oscillator: { type: 'sine' }, modulation: { type: 'sine' },
+    envelope: { attack: 0.003, decay: 0.7, sustain: 0.12, release },
+    modulationEnvelope: { attack: 0.002, decay: 0.3, sustain: 0.05, release: 0.5 },
+  });
+}
+
+function buildPreset(name, useSamples = true) {
+  const makePiano = useSamples ? pianoSampler : pianoFallback;
   const bus = new Tone.Gain(1);
   const nodes = [bus];
   let melody, chords, bass, reverb;
@@ -58,7 +76,7 @@ function buildPreset(name) {
   } else if (name === 'forest') {
     reverb = new Tone.Reverb({ decay: 3.2, wet: 0.4 });
     const lp = new Tone.Filter(2200, 'lowpass');
-    melody = pianoSampler(1.6); melody.volume.value = -4;
+    melody = makePiano(1.6); melody.volume.value = -4;
     const chorus = new Tone.Chorus(0.6, 3.5, 0.4).start();
     chords = new Tone.PolySynth(Tone.AMSynth, {
       volume: -18, harmonicity: 1.5,
@@ -98,16 +116,18 @@ function buildPreset(name) {
     nodes.push(reverb, delay, mf, cf);
   } else {
     reverb = new Tone.Reverb({ decay: 2.6, wet: 0.28 });
-    melody = pianoSampler(); melody.volume.value = -2;
-    chords = pianoSampler(1.8); chords.volume.value = -9;
-    bass = pianoSampler(1.4); bass.volume.value = -5;
+    melody = makePiano(); melody.volume.value = -2;
+    chords = makePiano(1.8); chords.volume.value = -9;
+    bass = makePiano(1.4); bass.volume.value = -5;
     melody.chain(reverb, bus);
     chords.chain(reverb, bus);
     bass.chain(reverb, bus);
     nodes.push(reverb);
   }
   nodes.push(melody, chords, bass);
-  return { melody, chords, bass, bus, nodes, ready: Promise.all([reverb.ready, Tone.loaded()]) };
+  return { melody, chords, bass, bus, nodes,
+    ready: Promise.all([reverb.ready, ...[melody, chords, bass].map(s => s.sampleReady)]),
+  };
 }
 
 function buildInkRack(bus) {
@@ -148,9 +168,27 @@ function buildInkRack(bus) {
   };
 }
 
+function disposeNodes(rack) {
+  if (rack) rack.nodes.forEach(node => node.dispose());
+}
+
+function release(synth) {
+  if (synth?.releaseAll) synth.releaseAll();
+  else if (synth?.triggerRelease) synth.triggerRelease();
+}
+
+function within(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Audio loading timed out')), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export class Engine {
   constructor() {
     this.limiter = null;
+    this.output = null;
     this.preset = null;
     this.presetName = null;
     this.parts = [];
@@ -159,16 +197,28 @@ export class Engine {
     this.inkEvents = [];
     this.result = null;
     this.onState = () => {};
-    this.onNote = () => {};       // (ev, kind) 每个音响起时回调，用来在画上点光
+    this.onNote = () => {};
     this.onInk = () => {};
+    this.onNotice = () => {}; // ({ message, kind }) — sample fallback / loading errors
     this._loading = null;
+    this._presetRequest = 0;
+    this._requestedPreset = null;
+    this._pendingPreset = false;
+    this._resumeAfterPreset = false;
+    this._resumeBeat = 0;
+    this._drawGeneration = 0;
+    this._volume = 0.8;
+    this._muted = false;
+    this._outputActive = false;
+    this.tracks = { melody: true, chords: true, bass: true, ink: true };
   }
 
-  /** 建输出链。不需要用户手势，可在页面加载后预热。 */
+  /** Audio context is only resumed by ensureStarted(), inside a user gesture. */
   init() {
     if (this.limiter) return;
-    this.limiter = new Tone.Limiter(-1).toDestination();
-    Tone.getDestination().volume.value = -2;
+    if (typeof Tone === 'undefined') throw new Error('声音引擎未加载，请刷新后重试');
+    this.output = new Tone.Gain(0).toDestination();
+    this.limiter = new Tone.Limiter(-1).connect(this.output);
   }
 
   _ensureInkRack() {
@@ -182,45 +232,94 @@ export class Engine {
     await Tone.start();
   }
 
-  async setPreset(name) {
-    if (this.presetName === name && this.preset) return this._loading;
+  setPreset(name) {
+    if (!PRESETS[name]) return Promise.reject(new Error('未知音色'));
+    if (this._requestedPreset === name && this._loading) return this._loading;
+    if (this.presetName === name && this.preset && !this._pendingPreset) return Promise.resolve();
     this.init();
-    const wasPlaying = this.playing;
-    const pos = this.beat;
-    this.stop();
-    if (this.preset) this.preset.nodes.forEach(n => n.dispose());
-    this.preset = buildPreset(name);
-    this.presetName = name;
-    this.preset.bus.connect(this.limiter);
-    this._loading = this.preset.ready;
-    await this._loading;
-    if (this.result) this.load(this.result, false);
-    if (wasPlaying) this.play(pos);
+    const request = ++this._presetRequest;
+    this._requestedPreset = name;
+    // Rapid switches inherit the original intent, not the temporary paused state.
+    if (!this._pendingPreset) {
+      this._resumeAfterPreset = this.playing;
+      this._resumeBeat = this.beat;
+    }
+    this._pendingPreset = true;
+    this._halt(false);
+    this._loading = (async () => {
+      let candidate;
+      try {
+        candidate = buildPreset(name);
+        try {
+          await within(candidate.ready, SAMPLE_TIMEOUT_MS);
+        } catch (error) {
+          disposeNodes(candidate);
+          candidate = null;
+          if (request !== this._presetRequest) return;
+          if (name !== 'piano' && name !== 'forest') throw error;
+          candidate = buildPreset(name, false);
+          await within(candidate.ready, SAMPLE_TIMEOUT_MS);
+          if (request === this._presetRequest) {
+            this.onNotice({ kind: 'info', message: '钢琴采样暂时未能加载，已切换为轻巧的合成琴音，仍可继续创作。' });
+          }
+        }
+        if (request !== this._presetRequest) {
+          disposeNodes(candidate);
+          return;
+        }
+        this.parts.forEach(part => part.dispose());
+        this.parts = [];
+        disposeNodes(this.preset);
+        this.preset = candidate;
+        this.presetName = name;
+        candidate.bus.connect(this.limiter);
+        this._pendingPreset = false;
+        if (this.result) this.load(this.result, false);
+        if (this._resumeAfterPreset) this.play(this._resumeBeat);
+        this._resumeAfterPreset = false;
+      } catch (error) {
+        disposeNodes(candidate);
+        if (request !== this._presetRequest) return;
+        this._pendingPreset = false;
+        this._requestedPreset = null;
+        this._loading = null;
+        // The old rack is still valid when a new effect fails to initialize.
+        if (this._resumeAfterPreset && this.preset) this.play(this._resumeBeat);
+        this._resumeAfterPreset = false;
+        throw error;
+      }
+    })();
+    return this._loading;
   }
 
   load(result, resetPosition = true) {
     const wasPlaying = this.playing;
     const pos = resetPosition ? 0 : this.beat;
-    this.stop();
+    this._halt(resetPosition);
     this.parts.forEach(p => p.dispose());
     this.parts = [];
-    const T = Tone.getTransport();
     this.result = result;
-    if (!this.preset) return;
+    if (resetPosition) this._resumeBeat = 0;
+    if (!result || !this.preset || this._pendingPreset) return;
+    const T = Tone.getTransport();
     T.bpm.value = result.tempo;
     const spb = 60 / result.tempo;
     const inst = this.preset;
     const draw = Tone.getDraw();
     const mk = (events, synth, gain, kind) => {
       const part = new Tone.Part((time, ev) => {
+        if (!this.tracks[kind]) return;
         const note = Tone.Frequency(ev.note, 'midi').toNote();
         synth.triggerAttackRelease(note, ev.dur * spb, time, (ev.vel / 127) * gain);
-        draw.schedule(() => this.onNote(ev, kind), time);
-      }, events.map(([s, d, n, v, pos]) => ({ time: s * spb, note: n, dur: d, vel: v, pos })));
-      const loopEnd = result.bars * 4 * spb;
+        const generation = this._drawGeneration;
+        draw.schedule(() => {
+          if (generation === this._drawGeneration && this.playing) this.onNote(ev, kind);
+        }, time);
+      }, events.map(([s, d, n, v, position]) => ({ time: s * spb, note: n, dur: d, vel: v, pos: position })));
+      part.mute = !this.tracks[kind];
       part.loop = true;
       part.loopStart = 0;
-      part.loopEnd = loopEnd;
+      part.loopEnd = result.bars * 4 * spb;
       part.start(0);
       return part;
     };
@@ -232,6 +331,7 @@ export class Engine {
     T.loop = true;
     T.loopStart = 0;
     T.loopEnd = result.bars * 4 * spb;
+    T.seconds = pos * spb;
     this.setInks(this.inkEvents);
     if (wasPlaying) this.play(pos);
   }
@@ -240,6 +340,7 @@ export class Engine {
     this.inkEvents = events || [];
     this.inkParts.forEach(p => p.dispose());
     this.inkParts = [];
+    if (this.inkRack) Object.values(this.inkRack.synths).forEach(release);
     if (!this.result || !this.inkEvents.length) return;
     const rack = this._ensureInkRack();
     const spb = 60 / this.result.tempo;
@@ -249,13 +350,18 @@ export class Engine {
       const source = this.inkEvents.filter(e => e.kind === kind);
       if (!source.length) continue;
       const part = new Tone.Part((time, ev) => {
+        if (!this.tracks.ink) return;
         const note = Tone.Frequency(ev.note, 'midi').toNote();
         rack.synths[kind].triggerAttackRelease(note, ev.dur * spb, time, ev.vel / 127);
-        draw.schedule(() => this.onInk(ev), time);
+        const generation = this._drawGeneration;
+        draw.schedule(() => {
+          if (generation === this._drawGeneration && this.playing) this.onInk(ev);
+        }, time);
       }, source.map(e => ({
         time: e.beat * spb, id: e.id, note: e.note, dur: e.dur,
         vel: e.vel, kind: e.kind, x: e.x, y: e.y,
       })));
+      part.mute = !this.tracks.ink;
       part.loop = true;
       part.loopStart = 0;
       part.loopEnd = loopEnd;
@@ -265,48 +371,98 @@ export class Engine {
   }
 
   async triggerInk(mark) {
+    if (!this.tracks.ink || !INKS[mark.kind]) return;
+    const generation = this._drawGeneration;
     await this.ensureStarted();
     const rack = this._ensureInkRack();
     await rack.ready;
+    if (generation !== this._drawGeneration || !this.tracks.ink) return;
+    this._outputActive = true;
+    this._updateOutput();
     const note = Tone.Frequency(mark.note, 'midi').toNote();
     const seconds = Math.max(0.12, mark.dur * 60 / (this.result?.tempo || 80));
     rack.synths[mark.kind].triggerAttackRelease(note, seconds, Tone.now(), mark.vel / 127);
   }
 
   play(fromBeat = null) {
-    if (!this.result || !this.preset) return;
+    if (!this.result) return;
+    if (this._pendingPreset) {
+      this._resumeAfterPreset = true;
+      if (fromBeat !== null) this._resumeBeat = fromBeat;
+      return;
+    }
+    if (!this.preset) return;
     const T = Tone.getTransport();
     if (fromBeat !== null) T.seconds = fromBeat * 60 / this.result.tempo;
+    this._outputActive = true;
+    this._updateOutput();
     T.start();
     this.onState(true);
   }
 
-  pause() { Tone.getTransport().pause(); this.onState(false); }
+  pause() {
+    this._resumeAfterPreset = false;
+    this._halt(false);
+  }
 
   toggle() { this.playing ? this.pause() : this.play(); }
 
-  stop() {
+  _halt(reset) {
+    if (!this.limiter) return;
     const T = Tone.getTransport();
-    T.stop(); T.seconds = 0;
-    if (this.preset) {
-      for (const s of [this.preset.melody, this.preset.chords, this.preset.bass]) {
-        if (s.releaseAll) s.releaseAll();
-        else if (s.triggerRelease) s.triggerRelease();
-      }
-    }
-    if (this.inkRack) {
-      for (const s of Object.values(this.inkRack.synths)) {
-        if (s.releaseAll) s.releaseAll();
-        else if (s.triggerRelease) s.triggerRelease();
-      }
-    }
+    if (reset) { T.stop(); T.seconds = 0; }
+    else T.pause();
+    ++this._drawGeneration;
+    // Silence effect tails as well as held notes; previewing a new ink or
+    // pressing play reopens this short fade without a click.
+    this._outputActive = false;
+    this._updateOutput();
+    if (this.preset) [this.preset.melody, this.preset.chords, this.preset.bass].forEach(release);
+    if (this.inkRack) Object.values(this.inkRack.synths).forEach(release);
     this.onState(false);
   }
 
+  stop() {
+    this._resumeAfterPreset = false;
+    this._resumeBeat = 0;
+    this._halt(true);
+  }
+
+  setVolume(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return;
+    this._volume = Math.max(0, Math.min(1, number));
+    this._updateOutput();
+  }
+
+  setMuted(muted) {
+    this._muted = Boolean(muted);
+    this._updateOutput();
+  }
+
+  _updateOutput() {
+    if (this.output) this.output.gain.rampTo(this._muted || !this._outputActive ? 0 : this._volume, 0.04);
+  }
+
+  setTrackEnabled(kind, enabled) {
+    if (!(kind in this.tracks)) return;
+    this.tracks[kind] = Boolean(enabled);
+    if (kind === 'ink') {
+      this.inkParts.forEach(p => { p.mute = !enabled; });
+      if (!enabled && this.inkRack) Object.values(this.inkRack.synths).forEach(release);
+    } else {
+      const index = ['melody', 'chords', 'bass'].indexOf(kind);
+      if (this.parts[index]) this.parts[index].mute = !enabled;
+      if (!enabled && this.preset) release(this.preset[kind]);
+    }
+  }
+
+  get volume() { return this._volume; }
+  get muted() { return this._muted; }
   get ready() { return this._loading || Promise.resolve(); }
-  get playing() { return Tone.getTransport().state === 'started'; }
+  get playing() { return this.limiter ? Tone.getTransport().state === 'started' : false; }
   get beat() {
-    if (!this.result) return 0;
+    if (!this.result || !this.limiter) return 0;
     return Tone.getTransport().seconds / 60 * this.result.tempo;
   }
 }

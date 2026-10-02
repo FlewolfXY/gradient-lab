@@ -53,15 +53,23 @@ function randNormal(rnd, sd) {
 
 // ---------------- 图像分析 ----------------
 
-/** 从 <img> / canvas 源提取 HSV、明度与边缘密度。宽度统一缩到 width。 */
+/** 从 <img> / canvas 源提取 HSV、明度与边缘密度。透明区域按白纸处理。 */
 export function analyzeImage(source, width = 480) {
   const sw = source.naturalWidth || source.videoWidth || source.width;
   const sh = source.naturalHeight || source.videoHeight || source.height;
-  const w = Math.min(width, sw);
-  const h = Math.max(1, Math.round(sh * w / sw));
+  if (!Number.isFinite(sw) || !Number.isFinite(sh) || sw <= 0 || sh <= 0) {
+    throw new Error('图片还没有可读取的尺寸，请换一张图片试试');
+  }
+  // 不只限宽：长截图也必须有像素预算，否则前缀和与排序会耗尽内存。
+  // 普通 480 × 960 以内的图片（包含现有画廊）保持原有采样精度。
+  const maxWidth = Number.isFinite(width) && width > 0 ? Math.min(960, width) : 480;
+  const scale = Math.min(1, maxWidth / sw, 960 / sh, Math.sqrt(460800 / sw / sh));
+  const w = Math.max(1, Math.floor(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
   const cv = document.createElement('canvas');
   cv.width = w; cv.height = h;
   const ctx = cv.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('当前浏览器无法读取画布，请换一个浏览器试试');
   ctx.drawImage(source, 0, 0, w, h);
   const rgba = ctx.getImageData(0, 0, w, h).data;
 
@@ -69,7 +77,11 @@ export function analyzeImage(source, width = 480) {
   const H = new Float32Array(n), S = new Float32Array(n), V = new Float32Array(n), gray = new Float32Array(n);
   let hash = 2166136261;
   for (let i = 0; i < n; i++) {
-    const r = rgba[i * 4] / 255, g = rgba[i * 4 + 1] / 255, b = rgba[i * 4 + 2] / 255;
+    const alpha = rgba[i * 4 + 3] / 255;
+    const rr = Math.round(rgba[i * 4] * alpha + 255 * (1 - alpha));
+    const gg = Math.round(rgba[i * 4 + 1] * alpha + 255 * (1 - alpha));
+    const bb = Math.round(rgba[i * 4 + 2] * alpha + 255 * (1 - alpha));
+    const r = rr / 255, g = gg / 255, b = bb / 255;
     const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
     let hue = 0;
     if (d > 1e-9) {
@@ -84,7 +96,7 @@ export function analyzeImage(source, width = 480) {
     V[i] = mx;
     gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
     if ((i & 7) === 0) {
-      hash ^= rgba[i * 4] + (rgba[i * 4 + 1] << 8) + (rgba[i * 4 + 2] << 16);
+      hash ^= rr + (gg << 8) + (bb << 16);
       hash = Math.imul(hash, 16777619) >>> 0;
     }
   }
@@ -94,10 +106,10 @@ export function analyzeImage(source, width = 480) {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      const gx = x === 0 ? gray[i + 1] - gray[i]
+      const gx = w === 1 ? 0 : x === 0 ? gray[i + 1] - gray[i]
         : x === w - 1 ? gray[i] - gray[i - 1]
           : (gray[i + 1] - gray[i - 1]) / 2;
-      const gy = y === 0 ? gray[i + w] - gray[i]
+      const gy = h === 1 ? 0 : y === 0 ? gray[i + w] - gray[i]
         : y === h - 1 ? gray[i] - gray[i - w]
           : (gray[i + w] - gray[i - w]) / 2;
       edges[i] = Math.hypot(gx, gy);
@@ -134,7 +146,7 @@ export function analyzeGlobal(img) {
 /** 默认涟漪焦点：粗网格上的最亮格子中心。 */
 export function brightestPoint(img) {
   const { w, h, V } = img;
-  const gw = 32, gh = Math.max(4, Math.round(32 * h / w));
+  const gw = Math.min(32, w), gh = Math.min(h, 64, Math.max(4, Math.round(32 * h / w)));
   let best = -1, bx = 0.5, by = 0.5;
   for (let gy = 0; gy < gh; gy++) {
     for (let gx = 0; gx < gw; gx++) {
@@ -158,6 +170,7 @@ export class ScanField {
     this.scan = scan; this.w = w; this.h = h; this.n = n;
     const F = new Float32Array(n);
     if (scan === 'ripple') {
+      focus = normalizeFocus(focus) || brightestPoint(img);
       const fx = focus[0] * w, fy = focus[1] * h;
       this.focusPx = [fx, fy];
       for (let i = 0; i < n; i++) F[i] = Math.hypot((i % w) - fx, Math.floor(i / w) - fy);
@@ -225,8 +238,8 @@ export class ScanField {
       sat: g(2) / cnt,
       val: g(3) / cnt,
       edgeRaw: g(4) / cnt,
-      cy: v2 < 1e-9 ? 0.5 : (g(6) / v2) / Math.max(1, this.h - 1),
-      cx: v2 < 1e-9 ? 0.5 : (g(7) / v2) / Math.max(1, this.w - 1),
+      cy: this.h === 1 || v2 < 1e-9 ? 0.5 : (g(6) / v2) / (this.h - 1),
+      cx: this.w === 1 || v2 < 1e-9 ? 0.5 : (g(7) / v2) / (this.w - 1),
     };
   }
 
@@ -377,22 +390,27 @@ function makeChordEvents(chords) {
 
 // ---------------- 主流程 ----------------
 
+function normalizeFocus(focus) {
+  if (!Array.isArray(focus) || focus.length < 2 || !focus.slice(0, 2).every(Number.isFinite)) return null;
+  return focus.slice(0, 2).map(v => Math.max(0, Math.min(1, v)));
+}
+
 /**
  * @param img  analyzeImage 的结果
  * @param opts { scan, focus:[fx,fy]|null, bars, tempo, key, mode, seed }
  */
 export function summon(img, opts = {}) {
-  const nBars = opts.bars || 16;
-  const tempo = opts.tempo || 80;
-  const scan = opts.scan || 'lr';
-  const seed = opts.seed ?? img.hash;
+  const nBars = Number.isFinite(opts.bars) && opts.bars > 0 ? Math.max(1, Math.min(128, Math.round(opts.bars))) : 16;
+  const tempo = Number.isFinite(opts.tempo) && opts.tempo > 0 ? Math.max(20, Math.min(300, opts.tempo)) : 80;
+  const scan = Object.hasOwn(SCAN_NAMES, opts.scan) ? opts.scan : 'lr';
+  const seed = Number.isFinite(opts.seed) ? opts.seed >>> 0 : img.hash;
   const rnd = mulberry32(seed);
 
   const g = analyzeGlobal(img);
-  if (opts.key) g.tonicPc = PITCH_NAMES.indexOf(opts.key);
-  if (opts.mode) g.mode = opts.mode;
+  if (PITCH_NAMES.includes(opts.key)) g.tonicPc = PITCH_NAMES.indexOf(opts.key);
+  if (opts.mode === 'major' || opts.mode === 'minor') g.mode = opts.mode;
 
-  let focus = opts.focus;
+  let focus = normalizeFocus(opts.focus);
   if (scan === 'ripple' && !focus) focus = brightestPoint(img);
   const field = new ScanField(img, scan, focus);
 

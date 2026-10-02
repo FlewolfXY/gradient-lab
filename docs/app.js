@@ -1,6 +1,7 @@
 import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js';
 import { buildMidi } from './midi.js';
 import { Engine, PRESETS, INKS } from './sound.js';
+import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js';
 
 const PAINTINGS = [
   { id: 'mist', title: '蓝雾', file: 'paintings/mist.jpg' },
@@ -13,7 +14,10 @@ const $ = (id) => document.getElementById(id);
 const img = $('painting'), overlay = $('overlay'), wrap = $('canvasWrap'), hint = $('canvasHint');
 const playBtn = $('playBtn'), stopBtn = $('stopBtn'), nowChord = $('nowChord'), keyReadout = $('keyReadout');
 const statusEl = $('status');
-const dpr = window.devicePixelRatio || 1;
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const escapeHtml = text => String(text).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function setPressed(button, on) { button.classList.toggle('active', on); button.setAttribute('aria-pressed', String(on)); }
 
 const state = {
   painting: null,     // id 或 'upload'
@@ -32,9 +36,12 @@ const state = {
   inkKind: 'spark',
   ink: [],
   strokeSeq: 0,
+  imageSource: '',
+  loadVersion: 0,
 };
 const engine = new Engine();
 window.__gl = { state, engine };
+let playIntent = 0;
 
 // 音响起时在画上炸开的光点
 const sparks = [];
@@ -62,11 +69,13 @@ function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   if (p.get('p') && PAINTINGS.some(x => x.id === p.get('p'))) state.painting = p.get('p');
   if (p.get('s') && SCAN_NAMES[p.get('s')]) state.scan = p.get('s');
-  if (p.get('f')) { const [a, b] = p.get('f').split(',').map(Number); if (isFinite(a) && isFinite(b)) state.focus = [a, b]; }
+  if (p.get('f')) { const [a, b] = p.get('f').split(',').map(Number); if (isFinite(a) && isFinite(b)) state.focus = [a, b].map(v => Math.max(0, Math.min(1, v)));  }
   if (p.get('t')) state.tempo = Math.min(120, Math.max(50, parseInt(p.get('t')) || 80));
   if (p.get('m') === 'major' || p.get('m') === 'minor') state.mode = p.get('m');
   if (p.get('k') && PRESETS[p.get('k')]) state.preset = p.get('k');
-  if (p.get('seed')) state.seed = parseInt(p.get('seed'));
+  if (/^-?\d+$/.test(p.get('seed') || '')) state.seed = Number(p.get('seed')) >>> 0;
+  state.ink = decodeInk(p.get('i'));
+  state.strokeSeq = Math.max(0, ...state.ink.map(m => m.stroke));
 }
 function writeHash() {
   if (!state.painting || state.painting === 'upload') return;
@@ -76,7 +85,8 @@ function writeHash() {
   p.set('t', state.tempo);
   if (state.mode) p.set('m', state.mode);
   p.set('k', state.preset);
-  if (state.seed !== null) p.set('seed', state.seed);
+  if (state.seed !== null || state.result) p.set('seed', state.seed ?? state.result.seed);
+  if (state.ink.length) p.set('i', encodeInk(state.ink));
   history.replaceState(null, '', '#' + p.toString());
 }
 
@@ -90,7 +100,6 @@ function requestRender(immediate = false) {
 
 function doRender() {
   if (!state.analysis) return;
-  const t0 = performance.now();
   state.result = summon(state.analysis, {
     scan: state.scan, focus: state.scan === 'ripple' ? state.focus : null,
     tempo: state.tempo, mode: state.mode || null, seed: state.seed,
@@ -100,9 +109,8 @@ function doRender() {
   engine.load(state.result);
   engine.setInks(state.ink);
   playBtn.disabled = false;
-  const g = state.result.global;
-  keyReadout.innerHTML = `${state.result.key}（判定分 ${g.modeScore.toFixed(2)}）<br>` +
-    `${state.result.tempo} BPM · 种子 ${state.result.seed} · ${Math.round(performance.now() - t0)} ms`;
+  keyReadout.textContent = `${state.result.key} · ${state.result.tempo} BPM · ${state.result.bars} 小节`;
+  lastPlaybackBar = -1;
   buildDownloads();
   buildChordStrip();
   buildReport();
@@ -111,9 +119,12 @@ function doRender() {
   drawOverlay();
   writeHash();
   schedulePreload();
+  if ($('saveBtn')) $('saveBtn').disabled = false;
   if (state.resumeAfterRender) {
     state.resumeAfterRender = false;
-    armAudio().then(() => engine.play(0)).catch(() => {});
+    const version = state.loadVersion;
+    const intent = playIntent;
+    armAudio().then(() => { if (intent === playIntent && version === state.loadVersion && state.result) engine.play(0); }).catch(e => setStatus('音频启动失败：' + e.message, 'err'));
   }
 }
 
@@ -141,41 +152,53 @@ function buildDownloads() {
   const { melody, chords, bass } = state.result.tracks;
   const ink = state.ink.map(m => [m.beat, m.dur, m.note, m.vel]);
   const bpm = state.result.tempo;
-  const stem = (state.title || 'painting').replace(/\s+/g, '_');
+  const stem = (state.title || 'painting').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 80);
   const items = [
-    ['melody.mid', buildMidi([['melody', melody]], bpm)],
-    ['chords.mid', buildMidi([['chords', chords]], bpm)],
-    ['bass.mid', buildMidi([['bass', bass]], bpm)],
-    ...(ink.length ? [['painted.mid', buildMidi([['hand-painted', ink]], bpm)]] : []),
-    ['combined.mid', buildMidi([
+    ['combined.mid', '完整乐谱 MIDI', buildMidi([
       ['melody', melody], ['chords', chords], ['bass', bass],
       ...(ink.length ? [['hand-painted', ink]] : []),
     ], bpm)],
+    ['melody.mid', '旋律 MIDI', buildMidi([['melody', melody]], bpm)],
+    ['chords.mid', '和弦 MIDI', buildMidi([['chords', chords]], bpm)],
+    ['bass.mid', '低音 MIDI', buildMidi([['bass', bass]], bpm)],
+    ...(ink.length ? [['painted.mid', '我的笔迹 MIDI', buildMidi([['hand-painted', ink]], bpm)]] : []),
   ];
   const box = $('downloads');
   box.innerHTML = '';
-  items.forEach(([name, blob]) => {
+  items.forEach(([name, label, blob]) => {
     const url = URL.createObjectURL(blob);
     state.blobUrls.push(url);
     const a = document.createElement('a');
-    a.href = url; a.download = `${stem}-${name}`; a.textContent = name;
+    a.href = url; a.download = `${stem}-${name}`; a.textContent = label;
+    if (name === 'combined.mid') a.className = 'primary-download';
     box.appendChild(a);
   });
   const png = document.createElement('button');
-  png.textContent = '标注图 .png';
+  png.textContent = '分析标注图 PNG';
   png.addEventListener('click', exportAnnotated);
   box.appendChild(png);
+  const postcard = document.createElement('button');
+  postcard.textContent = '音乐明信片 PNG';
+  postcard.addEventListener('click', exportPostcard);
+  box.appendChild(postcard);
 }
 
 function buildChordStrip() {
   const box = $('chordStrip');
   box.innerHTML = '';
   state.result.chords.forEach((c, i) => {
-    const chip = document.createElement('span');
+    const chip = document.createElement('button');
     chip.className = 'chord-chip';
     chip.textContent = `${i + 1}·${c.label}`;
+    chip.type = 'button';
     chip.title = '从这一小节开始播放';
-    chip.addEventListener('click', async () => { await armAudio(); engine.play(i * 4); });
+    chip.setAttribute('aria-label', `从第 ${i + 1} 小节 ${c.label} 开始播放`);
+    chip.addEventListener('click', async () => {
+      const version = state.loadVersion;
+      const intent = ++playIntent;
+      try { await armAudio(); if (intent === playIntent && version === state.loadVersion && state.result) engine.play(i * 4); }
+      catch (e) { setStatus('音频启动失败：' + e.message, 'err'); }
+    });
     box.appendChild(chip);
   });
 }
@@ -202,7 +225,7 @@ function buildReport() {
       <td><b>${c.label}</b></td><td>${c.degree}</td><td class="why">${why}</td></tr>`;
   }).join('');
   $('report').innerHTML = `
-    <h2>${state.title} 的召唤报告</h2>
+    <h2>${escapeHtml(state.title)} 的读画报告</h2>
     <p class="lede">
       扫描方式 <b>${SCAN_NAMES[r.scan]}</b>${focusTxt}（每小节读掉等量的颜料）。
       全画主色相 <b>${g.hue.toFixed(0)}°</b>（饱和度加权，灰色不投票）。
@@ -217,13 +240,53 @@ function buildReport() {
       <summary>五分钟乐理（这份报告用到的全部概念）</summary>
       <ul class="theory">
         <li><b>调 (Key)</b>：全曲的引力中心。这幅画是 ${r.tonic} ${modeCn}，${r.tonic} 听起来最像"家"。</li>
-        <li><b>音级和弦</b>：调内六个常用和弦，大调 I ii iii IV V vi，小调 i III iv v VI VII。大写 = 大和弦（亮），小写 = 小和弦（暗）。砖全来自同一个音阶，随便排都协和。</li>
+        <li><b>音级和弦</b>：大调常用 I ii iii IV V vi，小调常用 i III iv v VI VII。大写 = 大和弦，小写 = 小和弦。基础三和弦来自当前音阶；高饱和度还会加入更有张力的扩展音。</li>
         <li><b>属功能</b>：离家最远、最想回家的和弦；每 4 小节拉一次，就是终止式的引力。</li>
         <li><b>7 音 / 9 音</b>：往和弦上加盖，声音变复杂变湿润。饱和度高就多盖一层。</li>
         <li><b>和弦音 vs 经过音</b>：强拍踩和弦音（稳），弱拍可以踩音阶其他音（流动）。</li>
         <li><b>音区</b>：同一个音名在不同八度。亮的区域住高处，暗的住低处。</li>
       </ul>
     </details>`;
+}
+
+let lastPlaybackBar = -1;
+let lastPlaybackActive = null;
+let lastProgressAt = 0;
+function colorName(hue, sat) {
+  if (sat < 0.12) return '轻淡的灰调';
+  return ['红色', '橙色', '黄色', '草绿色', '绿色', '青绿色', '青色', '湖蓝色', '蓝色', '紫色', '紫红色', '玫红色'][Math.round(hue / 30) % 12];
+}
+function formatTime(seconds) {
+  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+}
+function updatePlaybackReadout(bar, beat, active) {
+  const r = state.result;
+  if (bar !== lastPlaybackBar || active !== lastPlaybackActive) {
+    lastPlaybackBar = bar;
+    lastPlaybackActive = active;
+    const feat = r.barFeats[bar], chord = r.chords[bar];
+    const departure = r.departures?.[bar] ?? 0;
+    const hueStory = bar === 0 ? '第一小节先让和弦安家' : bar === r.bars - 1 ? '最后一小节让和弦回家'
+      : bar % 4 === 3 ? '到了乐句转弯处，和弦带出一点期待'
+      : departure < 0.34 ? '接近全画的色彩基调，和弦更安定' : departure < 0.67 ? '颜色开始变化，和弦也向外走一步' : '颜色偏离全画基调，和弦带出更强的张力';
+    const brightness = feat.val > 0.65 ? '画面较亮，旋律向高处走' : feat.val < 0.35 ? '画面较暗，旋律落在较低的音区' : '适中的亮度，让旋律停在中间音区';
+    const detail = ['细节舒缓，音符留出呼吸', '细节渐多，节奏轻轻流动', '细节丰富，音符更密一些', '纹理最密，节奏也变得活泼'][Math.min(3, Math.floor(feat.edge * 4))];
+    if ($('barLabel')) $('barLabel').textContent = `第 ${bar + 1} / ${r.bars} 小节 · ${chord.label}`;
+    if ($('barStory')) $('barStory').textContent = `${colorName(feat.hue, feat.sat)}：${hueStory}。${brightness}；${detail}。`;
+    if ($('barSwatch')) $('barSwatch').style.background = hsvToCss(feat.hue, feat.sat, feat.val);
+    nowChord.textContent = active && chord ? `${chord.label}（${chord.degree}）` : '';
+    document.querySelectorAll('.chord-chip').forEach((chip, i) => {
+      chip.classList.toggle('playing', active && i === bar);
+      if (active && i === bar) chip.setAttribute('aria-current', 'true'); else chip.removeAttribute('aria-current');
+    });
+    document.querySelectorAll('.bar-table tr[data-bar]').forEach(tr => tr.classList.toggle('playing', active && +tr.dataset.bar === bar));
+  }
+  const now = performance.now();
+  if (now - lastProgressAt > 100 || !active) {
+    lastProgressAt = now;
+    if ($('progressFill')) $('progressFill').style.width = `${beat / (r.bars * 4) * 100}%`;
+    if ($('timeReadout')) $('timeReadout').textContent = `${formatTime(beat * 60 / r.tempo)} / ${formatTime(r.bars * 4 * 60 / r.tempo)}`;
+  }
 }
 
 // ---------- 画布与 overlay ----------
@@ -322,11 +385,8 @@ function drawOverlay() {
   const active = playing || beat > 0;
   drawInk(ctx, W, H);
   drawSparks(ctx, W, H);
-  if (!playing) drawIdleRing(ctx, W, H);
-  const chord = state.result.chords[bar];
-  nowChord.textContent = active && chord ? `${chord.label}（${chord.degree}）` : '';
-  document.querySelectorAll('.chord-chip').forEach((chip, i) => chip.classList.toggle('playing', active && i === bar));
-  document.querySelectorAll('.bar-table tr[data-bar]').forEach(tr => tr.classList.toggle('playing', active && +tr.dataset.bar === bar));
+  if (!playing && !reducedMotion) drawIdleRing(ctx, W, H);
+  updatePlaybackReadout(bar, beat, active);
 }
 
 const SPARK_LIFE = 1400;
@@ -425,7 +485,11 @@ function drawIdleRing(ctx, W, H) {
   ctx.beginPath(); ctx.arc(fx * W, fy * H, 3.5, 0, Math.PI * 2); ctx.fill();
 }
 
-function tick() { drawOverlay(); requestAnimationFrame(tick); }
+let lastDrawAt = 0;
+function tick(now) {
+  if (!document.hidden && now - lastDrawAt >= (reducedMotion ? 100 : 30)) { drawOverlay(); lastDrawAt = now; }
+  requestAnimationFrame(tick);
+}
 requestAnimationFrame(tick);
 
 function exportAnnotated() {
@@ -448,17 +512,65 @@ function exportAnnotated() {
   a.click();
 }
 
+function exportPostcard() {
+  if (!state.result) return;
+  const cv = document.createElement('canvas');
+  const W = 1080, margin = 64;
+  const pictureW = W - margin * 2;
+  const pictureH = Math.round(Math.min(1000, pictureW * img.naturalHeight / img.naturalWidth));
+  cv.width = W; cv.height = pictureH + 324;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff9eb'; ctx.fillRect(0, 0, W, cv.height);
+  ctx.fillStyle = '#827762'; ctx.font = '500 20px sans-serif';
+  ctx.fillText('GRADIENT LAB  /  A LITTLE PIECE OF SOUND', margin, 56);
+  ctx.save();
+  ctx.translate(margin, 88);
+  // Fit rather than stretch panoramic or tall uploaded paintings.
+  const fit = Math.min(pictureW / img.naturalWidth, pictureH / img.naturalHeight);
+  const drawW = img.naturalWidth * fit, drawH = img.naturalHeight * fit;
+  const x = (pictureW - drawW) / 2, imageY = (pictureH - drawH) / 2;
+  ctx.fillStyle = '#eee8d9'; ctx.fillRect(0, 0, pictureW, pictureH);
+  ctx.drawImage(img, x, imageY, drawW, drawH);
+  ctx.translate(x, imageY); drawInk(ctx, drawW, drawH, 1.5); ctx.restore();
+  const y = pictureH + 144;
+  ctx.fillStyle = '#423d32'; ctx.font = '600 38px "PingFang SC", sans-serif';
+  let title = state.title;
+  while (ctx.measureText(title).width > pictureW && title.length > 1) title = title.slice(0, -2) + '…';
+  ctx.fillText(title, margin, y);
+  ctx.fillStyle = '#827762'; ctx.font = '23px "PingFang SC", sans-serif';
+  ctx.fillText(`${state.result.key}  ·  ${state.tempo} BPM  ·  ${PRESETS[state.preset].name}`, margin, y + 44);
+  ctx.font = '20px "PingFang SC", sans-serif';
+  ctx.fillText('我把一幅画，留成了一小段声音。', margin, y + 90);
+  const swatches = state.result.barFeats;
+  const dotW = 15, startX = W - margin - swatches.length * 22;
+  swatches.forEach((f, i) => { ctx.fillStyle = hsvToCss(f.hue, f.sat, f.val); ctx.fillRect(startX + i * 22, y + 76, dotW, dotW); });
+  cv.toBlob(blob => {
+    if (!blob) { setStatus('明信片暂时没有生成，请再试一次。', 'err'); return; }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    a.download = `${state.title.replace(/[\\/:*?"<>|]/g, '_')}-音乐明信片.png`;
+    a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+    setStatus('音乐明信片已交给浏览器下载；声音本身可用完整 MIDI 一起带走。');
+  }, 'image/png');
+}
+
 // ---------- 音频 ----------
 
 let arming = null;
 async function armAudio() {
-  if (arming) return arming;
+  if (arming) {
+    await arming;
+    if (engine.presetName !== state.preset) return armAudio();
+    await engine.ready;
+    return;
+  }
+  const requestedPreset = state.preset;
   arming = (async () => {
     await engine.ensureStarted();
-    if (engine.presetName !== state.preset) {
-      setStatus(`加载音色「${PRESETS[state.preset].name}」……`, 'busy');
-      await engine.setPreset(state.preset);
-      setStatus('');
+    if (engine.presetName !== requestedPreset) {
+      if (state.preset === requestedPreset) setStatus(`加载音色「${PRESETS[requestedPreset].name}」……`, 'busy');
+      await engine.setPreset(requestedPreset);
+      if (state.preset === requestedPreset) setStatus('');
     } else {
       await engine.ready;      // 预加载可能还在路上
     }
@@ -468,15 +580,20 @@ async function armAudio() {
 
 playBtn.addEventListener('click', async () => {
   try {
+    const intent = ++playIntent;
+    const version = state.loadVersion;
+    if (engine.playing) { engine.pause(); return; }
     await armAudio();
-    engine.toggle();
+    if (intent === playIntent && version === state.loadVersion && state.result) engine.toggle();
   } catch (e) {
     setStatus('音频启动失败：' + e.message, 'err');
   }
 });
-stopBtn.addEventListener('click', () => engine.stop());
+stopBtn.addEventListener('click', () => { playIntent++; state.resumeAfterRender = false; engine.stop(); });
 engine.onState = (playing) => {
-  playBtn.textContent = playing ? '❚❚ 暂停' : '▶ 播放';
+  playBtn.textContent = playing ? '❚❚ 暂停' : '▶ 听听这幅画';
+  playBtn.setAttribute('aria-pressed', String(playing));
+  lastPlaybackBar = -1;
   if (playing && !state.everPlayed) { state.everPlayed = true; hint.hidden = true; }
 };
 
@@ -536,18 +653,22 @@ function syncInk(immediate = false) {
   clearTimeout(inkSyncTimer);
   inkSyncTimer = setTimeout(() => {
     engine.setInks(state.ink);
-    buildDownloads();
+    if (state.result) buildDownloads();
+    writeHash();
   }, immediate ? 0 : 80);
 }
 
 function setTool(tool) {
   state.tool = tool;
-  document.querySelector('.origin-tool').classList.toggle('active', tool === 'origin');
+  setPressed(document.querySelector('.origin-tool'), tool === 'origin');
+  document.querySelectorAll('.ink-swatch').forEach(b => setPressed(b, tool === 'ink' && b.dataset.ink === state.inkKind));
   $('paintTools').classList.toggle('ready', state.everPlayed || tool === 'ink');
   wrap.classList.toggle('inking', tool === 'ink');
 }
 
 async function chooseOrigin(point) {
+  const intent = ++playIntent;
+  const version = state.loadVersion;
   const audioReady = armAudio(); // 必须在用户手势内启动 AudioContext
   state.focus = point;
   if (state.scan !== 'ripple') setScan('ripple');
@@ -555,6 +676,7 @@ async function chooseOrigin(point) {
   doRender();
   try {
     await audioReady;
+    if (intent !== playIntent || version !== state.loadVersion || !state.result) return;
     engine.play(0);
     setTool('ink');
     hint.textContent = '现在在画上点几下，或划一笔';
@@ -620,9 +742,15 @@ document.querySelector('.origin-tool').addEventListener('click', () => {
 });
 document.querySelectorAll('.ink-swatch').forEach(btn => btn.addEventListener('click', () => {
   state.inkKind = btn.dataset.ink;
-  document.querySelectorAll('.ink-swatch').forEach(x => x.classList.toggle('active', x === btn));
+  document.querySelectorAll('.ink-swatch').forEach(x => setPressed(x, x === btn));
   setTool('ink');
   setStatus(`${INKS[state.inkKind].name} · ${INKS[state.inkKind].desc}：在画上点或划`);
+  if (state.result) {
+    const kind = state.inkKind;
+    const note = pointToPitch(0.5, kind);
+    armAudio().then(() => engine.triggerInk({ kind, note, dur: kind === 'mist' ? 1.2 : 0.4, vel: 64 }))
+      .catch(e => setStatus('试听暂未启动：' + e.message, 'err'));
+  }
 }));
 $('inkUndo').addEventListener('click', () => {
   const last = state.ink[state.ink.length - 1]?.stroke;
@@ -637,7 +765,7 @@ $('inkClear').addEventListener('click', () => {
 
 function setScan(scan) {
   state.scan = scan;
-  document.querySelectorAll('.scan-btn').forEach(b => b.classList.toggle('active', b.dataset.scan === scan));
+  document.querySelectorAll('.scan-btn').forEach(b => setPressed(b, b.dataset.scan === scan));
   $('rippleTip').hidden = scan !== 'ripple';
 }
 document.querySelectorAll('.scan-btn').forEach(btn => btn.addEventListener('click', () => {
@@ -648,7 +776,7 @@ document.querySelectorAll('.scan-btn').forEach(btn => btn.addEventListener('clic
 
 function setMode(mode) {
   state.mode = mode;
-  document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  document.querySelectorAll('.mode-btn').forEach(b => setPressed(b, b.dataset.mode === mode));
 }
 document.querySelectorAll('.mode-btn').forEach(btn => btn.addEventListener('click', () => { setMode(btn.dataset.mode); requestRender(true); }));
 
@@ -659,14 +787,18 @@ tempoSlider.addEventListener('input', () => {
   requestRender();
 });
 
-$('rerollBtn').addEventListener('click', () => { state.seed = Math.floor(Math.random() * 10000); requestRender(true); });
+$('rerollBtn').textContent = '换点演奏表情';
+$('rerollBtn').addEventListener('click', () => {
+  state.seed = Math.floor(Math.random() * 10000); requestRender(true);
+  setStatus('保留旋律与和弦，只轻轻改变演奏力度和落键时机。');
+});
 
 $('shareBtn').addEventListener('click', async () => {
   if (state.painting === 'upload') { setStatus('上传的画只在你本地，链接无法带上它；换成内置画作即可分享。', 'err'); return; }
   writeHash();
   try {
     await navigator.clipboard.writeText(location.href);
-    setStatus(state.ink.length ? '链接已复制；扫描状态会复现，手绘点色请下载 MIDI 或标注图带走。' : '链接已复制，打开即复现这一刻的画、读法、焦点与音色。');
+    setStatus(state.ink.length ? '链接已复制，画作、读法、音色和你的笔迹都在里面。' : '链接已复制，打开即可还原这幅画的声音。');
   }
   catch { setStatus(location.href); }
 });
@@ -676,16 +808,16 @@ const presetRow = $('presetRow');
 Object.entries(PRESETS).forEach(([id, p]) => {
   const b = document.createElement('button');
   b.className = 'opt preset-btn' + (id === state.preset ? ' active' : '');
-  b.dataset.preset = id;
+  b.dataset.preset = id; b.setAttribute('aria-pressed', String(id === state.preset));
   b.innerHTML = `${p.name}<small>${p.desc}</small>`;
   b.addEventListener('click', async () => {
     state.preset = id;
-    document.querySelectorAll('.preset-btn').forEach(x => x.classList.toggle('active', x.dataset.preset === id));
+    document.querySelectorAll('.preset-btn').forEach(x => setPressed(x, x.dataset.preset === id));
     writeHash();
     if (engine.limiter) {
       setStatus(`加载音色「${p.name}」……`, 'busy');
-      try { await engine.setPreset(id); setStatus(''); }
-      catch (e) { setStatus('音色加载失败：' + e.message, 'err'); }
+      try { await engine.setPreset(id); if (state.preset === id) setStatus(''); }
+      catch (e) { if (state.preset === id) setStatus('音色加载失败：' + e.message, 'err'); }
     }
   });
   presetRow.appendChild(b);
@@ -701,35 +833,72 @@ PAINTINGS.forEach(p => {
   gallery.appendChild(b);
 });
 
-function loadImage(src, id, title, keepParams = false) {
-  state.painting = id; state.title = title;
+async function loadImage(src, id, title, keepParams = false, restoredInk = []) {
+  const version = ++state.loadVersion;
+  clearTimeout(renderTimer);
+  clearTimeout(inkSyncTimer);
+  drawing = false;
+  state.painting = id;
+  if (id === 'upload') history.replaceState(null, '', location.pathname + location.search);
+  state.title = String(title).slice(0, 120);
+  state.imageSource = src;
   if (!keepParams) { state.focus = null; state.seed = null; }
-  state.ink = [];
+  state.ink = cleanInk(restoredInk);
+  state.strokeSeq = Math.max(0, ...state.ink.map(m => m.stroke));
   setTool('origin');
   state.analysis = null; state.result = null;
   playBtn.disabled = true;
-  state.resumeAfterRender = engine.playing;   // 换画不打断：读完接着响
+  if ($('saveBtn')) $('saveBtn').disabled = true;
+  state.resumeAfterRender = engine.playing || state.resumeAfterRender;
   engine.stop();
-  document.querySelectorAll('.thumb').forEach(t => t.classList.toggle('active', t.dataset.id === id));
+  document.querySelectorAll('.thumb').forEach(t => setPressed(t, t.dataset.id === id));
   hint.hidden = false; hint.textContent = '正在读画……'; hint.classList.add('loading');
-  img.onload = () => {
-    sizeOverlay();
-    try {
-      state.analysis = analyzeImage(img);
-      state.analysis.bright = brightestPoint(state.analysis);
-    } catch (e) {
-      setStatus('读图失败：' + e.message, 'err');
-      return;
+  const candidate = new Image();
+  try {
+    await new Promise((resolve, reject) => {
+      candidate.onload = resolve;
+      candidate.onerror = () => reject(new Error('图片无法打开，请试试 JPG、PNG 或 WebP。'));
+      candidate.src = src;
+    });
+    if (version !== state.loadVersion) return false;
+    if (!candidate.naturalWidth || !candidate.naturalHeight) throw new Error('这张图片没有可读取的尺寸。');
+    if (candidate.naturalWidth * candidate.naturalHeight > 40000000) throw new Error('这张图尺寸太大，请缩小到 4000 万像素以内。');
+    // Freeze uploaded images into a small local copy before analysis. The
+    // sketchbook then reopens this exact source instead of re-compressing it
+    // and silently changing the music on each save / restore.
+    if (id === 'upload' && src.startsWith('blob:')) {
+      src = compressImage(candidate);
+      await new Promise((resolve, reject) => {
+        candidate.onload = resolve;
+        candidate.onerror = () => reject(new Error('图片压缩失败，请换一张试试。'));
+        candidate.src = src;
+      });
+      if (version !== state.loadVersion) return false;
+      state.imageSource = src;
+      setUploadThumb(src, state.title);
     }
+    state.analysis = analyzeImage(candidate);
+    state.analysis.bright = brightestPoint(state.analysis);
+    img.src = src;
+    img.alt = state.title;
+    await img.decode().catch(() => {});
+    if (version !== state.loadVersion) return false;
+    sizeOverlay();
     requestRender(true);
-  };
-  img.onerror = () => { hint.textContent = '图片加载失败'; };
-  img.src = src;
+    return true;
+  } catch (e) {
+    if (version !== state.loadVersion) return false;
+    state.resumeAfterRender = false;
+    hint.classList.remove('loading');
+    hint.textContent = '没能读懂这张图，换一张试试？';
+    setStatus('读图失败：' + e.message, 'err');
+    return false;
+  }
 }
 
-function selectPainting(id, keepParams = false) {
+function selectPainting(id, keepParams = false, restoredInk = []) {
   const p = PAINTINGS.find(x => x.id === id) || PAINTINGS[0];
-  loadImage(p.file, p.id, p.title, keepParams);
+  return loadImage(p.file, p.id, p.title, keepParams, restoredInk);
 }
 
 $('uploadInput').addEventListener('change', e => {
@@ -754,22 +923,182 @@ document.addEventListener('paste', e => {
   if (item) openFile(item.getAsFile());
 });
 
-function openFile(f) {
-  const url = URL.createObjectURL(f);
-  const title = f.name.replace(/\.[^.]+$/, '');
+let currentUploadUrl = null;
+function setUploadThumb(src, title) {
   let thumb = gallery.querySelector('[data-id="upload"]');
   if (!thumb) {
     thumb = document.createElement('button');
+    thumb.type = 'button';
     thumb.className = 'thumb'; thumb.dataset.id = 'upload';
     thumb.addEventListener('click', () => loadImage(thumb.dataset.src, 'upload', thumb.dataset.title));
     gallery.prepend(thumb);
   }
-  thumb.dataset.src = url; thumb.dataset.title = title;
-  thumb.innerHTML = `<img src="${url}" alt="${title}"><span>${title}</span>`;
-  history.replaceState(null, '', location.pathname);
-  loadImage(url, 'upload', title);
-  document.getElementById('lab').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  thumb.dataset.src = src;
+  thumb.dataset.title = title;
+  const preview = document.createElement('img');
+  preview.src = src; preview.alt = title;
+  const label = document.createElement('span');
+  label.textContent = title;
+  thumb.replaceChildren(preview, label);
 }
+
+function openFile(f) {
+  if (!f) return;
+  if (!/^image\/(jpeg|png|webp|gif|avif|bmp)$/.test(f.type)) {
+    setStatus('请选择 JPG、PNG、WebP、GIF、AVIF 或 BMP 图片；动图会读入其中一帧。', 'err');
+    return;
+  }
+  if (f.size > 20 * 1024 * 1024) {
+    setStatus('这张图超过 20 MB，请先缩小一点再带进来。', 'err');
+    return;
+  }
+  const url = URL.createObjectURL(f);
+  const previousUrl = currentUploadUrl;
+  currentUploadUrl = url;
+  const title = (f.name.replace(/\.[^.]+$/, '') || '我的画').slice(0, 120);
+  setUploadThumb(url, title);
+  history.replaceState(null, '', location.pathname + location.search);
+  setStatus('你的图片只在这台设备中读画，不会上传。');
+  loadImage(url, 'upload', title).finally(() => { if (previousUrl) URL.revokeObjectURL(previousUrl); });
+  $('lab').scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+}
+
+// ---------- 灵感配方与本机小抽屉 ----------
+const RECIPES = [
+  { name: '浮光慢慢', preset: 'ice', scan: 'ripple', tempo: 64, mode: '', story: '让玻璃般的钟声从画里荡开，慢一点，听颜色留下的余韵。' },
+  { name: '林间散步', preset: 'forest', scan: 'lr', tempo: 78, mode: '', story: '用温柔的木质音色从左向右读画，像沿着一条小路散步。' },
+  { name: '纸上节拍', preset: 'machine', scan: 'tb', tempo: 108, mode: '', story: '从上往下翻阅画面，让细节变成轻快的电子节拍。' },
+];
+let recipeIndex = 0;
+let previousRecipe = null;
+function applySettings(settings) {
+  state.scan = settings.scan; state.mode = settings.mode;
+  state.tempo = settings.tempo; state.preset = settings.preset;
+  state.seed = settings.seed ?? null;
+  if ('focus' in settings) state.focus = settings.focus;
+  setScan(state.scan); setMode(state.mode);
+  tempoSlider.value = state.tempo; $('tempoVal').textContent = state.tempo;
+  document.querySelectorAll('.preset-btn').forEach(b => setPressed(b, b.dataset.preset === state.preset));
+}
+function currentSettings() {
+  return { scan: state.scan, mode: state.mode, tempo: state.tempo, preset: state.preset,
+    seed: state.seed ?? state.result?.seed ?? null, focus: state.focus ? [...state.focus] : null };
+}
+async function changeRecipe(settings, description) {
+  const intent = playIntent;
+  const version = state.loadVersion;
+  const wasPlaying = engine.playing;
+  applySettings(settings);
+  doRender();
+  setStatus(description);
+  if (engine.limiter) {
+    const preset = state.preset;
+    try { await engine.setPreset(preset); if (intent === playIntent && version === state.loadVersion && state.preset === preset && wasPlaying) engine.play(0); }
+    catch (e) { setStatus('音色暂未加载：' + e.message, 'err'); }
+  }
+}
+$('surpriseBtn')?.addEventListener('click', () => {
+  if (!state.result) return;
+  previousRecipe = currentSettings();
+  const recipe = RECIPES[recipeIndex++ % RECIPES.length];
+  changeRecipe({ ...recipe, seed: state.seed ?? state.result.seed }, `灵感配方「${recipe.name}」：${recipe.story} 你的画和笔迹都还在。`);
+  if ($('undoSurpriseBtn')) $('undoSurpriseBtn').hidden = false;
+});
+$('undoSurpriseBtn')?.addEventListener('click', () => {
+  if (!previousRecipe || !state.result) return;
+  changeRecipe(previousRecipe, '已回到灵感配方之前的声音。');
+  previousRecipe = null;
+  $('undoSurpriseBtn').hidden = true;
+});
+
+function compressImage(source) {
+  const ratio = Math.min(1, 640 / Math.max(source.naturalWidth, source.naturalHeight));
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(source.naturalWidth * ratio));
+  cv.height = Math.max(1, Math.round(source.naturalHeight * ratio));
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(source, 0, 0, cv.width, cv.height);
+  return cv.toDataURL('image/jpeg', 0.8);
+}
+function imageForStorage() {
+  return state.painting === 'upload' ? state.imageSource : compressImage(img);
+}
+
+function renderSavedWorks(works) {
+  const box = $('savedWorks');
+  if (!box) return;
+  try { works ??= loadWorks(); }
+  catch { box.textContent = '暂时无法读取本机小抽屉，仍可下载作品带走。'; return; }
+  box.replaceChildren();
+  if (!works.length) {
+    const empty = document.createElement('p');
+    empty.className = 'saved-empty';
+    empty.textContent = '这里还空着。收藏一幅会唱歌的画吧，只存这台设备，最多 8 份。';
+    box.appendChild(empty);
+    return;
+  }
+  for (const work of works) {
+    const card = document.createElement('article');
+    card.className = 'saved-card';
+    const open = document.createElement('button');
+    open.className = 'saved-open'; open.type = 'button';
+    open.setAttribute('aria-label', `打开作品：${work.title}`);
+    const thumb = document.createElement('img');
+    thumb.src = work.image || PAINTINGS.find(p => p.id === work.painting)?.file;
+    thumb.alt = ''; thumb.loading = 'lazy';
+    const name = document.createElement('strong'); name.textContent = work.title;
+    const detail = document.createElement('small');
+    detail.textContent = `${PRESETS[work.preset].name} · ${work.tempo} BPM · ${new Date(work.createdAt).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}`;
+    open.append(thumb, name, detail);
+    open.addEventListener('click', async () => {
+      applySettings(work);
+      if (work.painting === 'upload') {
+        setUploadThumb(work.image, work.title);
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+      const src = work.painting === 'upload' ? work.image : PAINTINGS.find(p => p.id === work.painting).file;
+      const loaded = await loadImage(src, work.painting, work.title, true, work.ink);
+      if (loaded) {
+        setStatus(`已打开「${work.title}」，参数和笔迹也回来了。`);
+        if (engine.limiter) engine.setPreset(state.preset).catch(e => setStatus('音色暂未加载：' + e.message, 'err'));
+      }
+    });
+    const remove = document.createElement('button');
+    remove.type = 'button'; remove.className = 'saved-delete'; remove.textContent = '删除';
+    remove.setAttribute('aria-label', `删除本机作品：${work.title}`);
+    remove.addEventListener('click', () => {
+      try { renderSavedWorks(removeWork(work.id)); setStatus(`已从这台设备移除「${work.title}」。`); }
+      catch { setStatus('这次没能删除，请检查浏览器是否允许本地存储。', 'err'); }
+    });
+    card.append(open, remove); box.appendChild(card);
+  }
+}
+$('saveBtn')?.addEventListener('click', () => {
+  if (!state.result) return;
+  try {
+    const works = saveWork({ ...currentSettings(), id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: Date.now(), painting: state.painting, title: state.title,
+      image: imageForStorage(), ink: state.ink });
+    renderSavedWorks(works);
+    setStatus(`已收藏到本机小抽屉（${works.length}/8）。清除浏览器数据会移除它，喜欢的话也下载一份吧。`);
+  } catch (e) { setStatus(e.message || '这次没能保存，仍可下载作品带走。', 'err'); }
+});
+window.addEventListener('storage', e => { if (e.key === 'gradient-lab:sketchbook:v1') renderSavedWorks(); });
+
+// Leave native buttons, sliders and inputs their own keyboard behavior.
+document.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest('input, textarea, select, button, a, summary, [contenteditable="true"]')) return;
+  if (!state.result) return;
+  e.preventDefault(); playBtn.click();
+});
+overlay.tabIndex = 0;
+overlay.setAttribute('role', 'button');
+overlay.setAttribute('aria-label', '音乐画布。按回车从画面中心开始，按空格播放或暂停；也可用鼠标或触摸作画。');
+overlay.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && state.result) { e.preventDefault(); chooseOrigin(state.focus || [0.5, 0.5]); }
+});
 
 // ---------- 启动 ----------
 
@@ -777,6 +1106,7 @@ readHash();
 setScan(state.scan);
 setMode(state.mode);
 tempoSlider.value = state.tempo; $('tempoVal').textContent = state.tempo;
-document.querySelectorAll('.preset-btn').forEach(x => x.classList.toggle('active', x.dataset.preset === state.preset));
-selectPainting(state.painting || PAINTINGS[0].id, true);
+document.querySelectorAll('.preset-btn').forEach(x => setPressed(x, x.dataset.preset === state.preset));
+selectPainting(state.painting || PAINTINGS[0].id, true, state.ink);
+renderSavedWorks();
 schedulePreload();
