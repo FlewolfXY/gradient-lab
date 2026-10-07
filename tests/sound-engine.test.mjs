@@ -234,3 +234,34 @@ test('coalesced pointer previews are throttled per ink while the full score is r
   await engine.triggerInk({ ...marks[0], kind: 'spark' });
   assert.equal(engine.inkRack.synths.spark.attacks, 1);
 });
+
+test('discarding a queued live attack preserves the playing companions and transport phase', async () => {
+  reset();
+  const engine = new Engine();
+  engine.load(score()); await engine.setPreset('ice');
+  engine.setInks([{ id: 'partner-1:n0', kind: 'water', beat: 0, note: 65, dur: 1, vel: 80, x: 0.2, y: 0.4 }]);
+  engine.play(3);
+  const preview = engine.triggerInk({ kind: 'spark', note: 72, dur: 1, vel: 95 });
+  engine.cancelInkPreviews();
+  await preview;
+  assert.equal(engine.inkRack.synths.spark.attacks, undefined);
+  assert.equal(engine.playing, true);
+  assert.equal(engine.beat, 3);
+  assert.equal(engine.inkEvents.length, 1);
+});
+
+test('adding live events can preserve existing note tails without rewinding transport', async () => {
+  reset();
+  const engine = new Engine();
+  engine.load(score()); await engine.setPreset('ice');
+  const first = { id: 'partner-1:n0', kind: 'mist', beat: 1, note: 67, dur: 2, vel: 80 };
+  engine.setInks([first]); engine.play(2.5);
+  const releases = engine.inkRack.synths.mist.releases || 0;
+  engine.setInks([first, { ...first, id: 'partner-2:n0', kind: 'water', beat: 3 }], { releaseHeld: false });
+  assert.equal(engine.inkRack.synths.mist.releases || 0, releases);
+  assert.equal(engine.playing, true);
+  assert.equal(engine.beat, 2.5);
+  assert.equal(engine.inkEvents.length, 2);
+  engine.setInks([first]);
+  assert.equal(engine.inkRack.synths.mist.releases, releases + 1, 'default editing still releases removed held notes');
+});

@@ -1,10 +1,12 @@
-import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js?v=20261003-1';
-import { buildMidi } from './midi.js?v=20261003-1';
-import { Engine, PRESETS, INKS } from './sound.js?v=20261003-1';
-import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js?v=20261003-1';
+import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js?v=20261006-1';
+import { buildMidi } from './midi.js?v=20261006-1';
+import { Engine, PRESETS, INKS } from './sound.js?v=20261006-1';
+import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork, restoreWork } from './studio-storage.js?v=20261006-1';
+import { createInkHistory } from './ink-history.js?v=20261006-1';
 
-import { replayEditPlans, encodeEditPlans, decodeEditPlans, normalizeEditPlans } from './creative-edits.js?v=20261003-1';
-import { installCreativeStudio } from './creative-studio.js?v=20261003-1';
+import { replayEditPlans, encodeEditPlans, decodeEditPlans, normalizeEditPlans } from './creative-edits.js?v=20261006-1';
+import { installCreativeStudio } from './creative-studio.js?v=20261006-1';
+import { installLivingTrio } from './living-trio.js?v=20261006-1';
 
 const PAINTINGS = [
   { id: 'prism', title: '棱镜', file: 'paintings/prism.jpg' },
@@ -45,9 +47,11 @@ const state = {
   editChanges: [],
 };
 const engine = new Engine();
+const inkHistory = createInkHistory();
 window.__gl = { state, engine };
 let playIntent = 0;
 let creative = null;
+let living = null;
 let offlineBusy = false;
 const anyDialogOpen = () => Boolean(document.querySelector('dialog[open]'));
 
@@ -69,6 +73,7 @@ engine.onInk = ev => {
 function setStatus(text, cls = '') {
   statusEl.textContent = text;
   statusEl.className = 'status ' + cls;
+  if (living?.active && text) living.notice(text);
 }
 
 // ---------- URL 状态 ----------
@@ -91,6 +96,7 @@ function writeHash() {
   if (!state.painting || state.painting === 'upload') return;
   const p = new URLSearchParams();
   p.set('p', state.painting); p.set('s', state.scan);
+  if (living?.active) p.set('view', 'play');
   if (state.scan === 'ripple' && state.focus) p.set('f', state.focus.join(','));
   p.set('t', state.tempo);
   if (state.mode) p.set('m', state.mode);
@@ -113,6 +119,7 @@ function requestRender(immediate = false) {
 function doRender() {
   clearTimeout(renderTimer); renderTimer = null;
   if (!state.analysis || offlineBusy) return;
+  $('saveFeedback').textContent = '';
   state.result = summon(state.analysis, {
     scan: state.scan, focus: state.scan === 'ripple' ? state.focus : null,
     tempo: state.tempo, mode: state.mode || null, seed: state.seed,
@@ -122,8 +129,10 @@ function doRender() {
   state.result = edited.result; state.editChanges = edited.changes;
   if (state.scan === 'ripple') state.focus = state.result.focus;
   updateInkMapping();
-  engine.load(state.result);
-  engine.setInks(state.ink);
+  if (!living?.active) {
+    engine.load(state.result);
+    engine.setInks(state.ink);
+  }
   playBtn.disabled = false;
   keyReadout.textContent = `${state.result.key} · ${state.result.tempo} BPM · ${state.result.bars} 小节`;
   lastPlaybackBar = -1;
@@ -137,6 +146,7 @@ function doRender() {
   schedulePreload();
   if ($('saveBtn')) $('saveBtn').disabled = false;
   creative?.update();
+  living?.sourceChanged();
   if (state.resumeAfterRender) {
     state.resumeAfterRender = false;
     const version = state.loadVersion;
@@ -392,7 +402,7 @@ function drawGeometry(ctx, W, H, geo, beat, playing, labels = false, scale = 1) 
 }
 
 function drawOverlay() {
-  if (!state.result || offlineBusy || creative?.comparing) return;
+  if (!state.result || offlineBusy || creative?.comparing || living?.active) return;
   const ctx = overlay.getContext('2d');
   const W = overlay.width / dpr, H = overlay.height / dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -690,12 +700,21 @@ function updateInkMapping() {
 
 let inkSyncTimer = null;
 function syncInk(immediate = false) {
+  $('saveFeedback').textContent = '';
+  updateInkTools();
   clearTimeout(inkSyncTimer);
   inkSyncTimer = setTimeout(() => {
     engine.setInks(state.ink);
     if (state.result) buildDownloads();
     writeHash();
   }, immediate ? 0 : 80);
+}
+
+function updateInkTools() {
+  $('inkUndo').disabled = !inkHistory.canUndo(state.ink);
+  $('inkClear').disabled = state.ink.length === 0;
+  $('inkUndo').title = '撤销上一笔或清空';
+  $('inkUndo').setAttribute('aria-label', '撤销上一笔或清空');
 }
 
 function setTool(tool) {
@@ -755,7 +774,7 @@ function addInkPoint(point, stroke) {
 let drawing = false;
 let activeStroke = 0;
 overlay.addEventListener('pointerdown', e => {
-  if (!state.analysis || !state.result) return;
+  if (!state.analysis || !state.result || offlineBusy || anyDialogOpen()) return;
   e.preventDefault();
   const point = canvasPoint(e);
   if (state.tool === 'origin') {
@@ -763,6 +782,7 @@ overlay.addEventListener('pointerdown', e => {
     return;
   }
   drawing = true;
+  inkHistory.remember(state.ink);
   activeStroke = ++state.strokeSeq;
   try { overlay.setPointerCapture(e.pointerId); } catch { /* synthetic events / older Safari */ }
   addInkPoint(point, activeStroke);
@@ -798,13 +818,18 @@ document.querySelectorAll('.ink-swatch').forEach(btn => btn.addEventListener('cl
   }
 }));
 $('inkUndo').addEventListener('click', () => {
-  const last = state.ink[state.ink.length - 1]?.stroke;
-  if (last === undefined) return;
-  state.ink = state.ink.filter(m => m.stroke !== last);
+  if (!inkHistory.canUndo(state.ink) || offlineBusy || anyDialogOpen()) return;
+  const wasEmpty = state.ink.length === 0;
+  state.ink = inkHistory.undo(state.ink);
+  updateInkMapping();
+  setStatus(wasEmpty && state.ink.length ? '清空前的笔迹和声音都回来了。' : '已撤销上一笔。');
   syncInk(true);
 });
 $('inkClear').addEventListener('click', () => {
+  if (!state.ink.length || offlineBusy || anyDialogOpen()) return;
+  inkHistory.remember(state.ink);
   state.ink = [];
+  setStatus('笔迹已清空。点旁边的 ↶ 可以全部恢复。');
   syncInk(true);
 });
 
@@ -858,6 +883,7 @@ Object.entries(PRESETS).forEach(([id, p]) => {
   b.innerHTML = `${p.name}<small>${p.desc}</small>`;
   b.addEventListener('click', async () => {
     state.preset = id;
+    $('saveFeedback').textContent = '';
     document.querySelectorAll('.preset-btn').forEach(x => setPressed(x, x.dataset.preset === id));
     writeHash();
     if (engine.limiter) {
@@ -882,6 +908,7 @@ PAINTINGS.forEach(p => {
 async function loadImage(src, id, title, keepParams = false, restoredInk = []) {
   if (offlineBusy) return false;
   creative?.changed();
+  $('saveFeedback').textContent = '';
   const version = ++state.loadVersion;
   clearTimeout(renderTimer);
   clearTimeout(inkSyncTimer);
@@ -894,14 +921,16 @@ async function loadImage(src, id, title, keepParams = false, restoredInk = []) {
   previousRecipe = null;
   if ($('undoSurpriseBtn')) $('undoSurpriseBtn').hidden = true;
   state.ink = cleanInk(restoredInk);
+  inkHistory.reset(); updateInkTools();
   state.strokeSeq = Math.max(0, ...state.ink.map(m => m.stroke));
   setTool('origin');
   state.analysis = null; state.result = null;
+  living?.sourceLoading();
   creative?.update();
   playBtn.removeAttribute('aria-busy');
   playBtn.disabled = true;
   if ($('saveBtn')) $('saveBtn').disabled = true;
-  state.resumeAfterRender = engine.playing || state.resumeAfterRender;
+  state.resumeAfterRender = !living?.active && (engine.playing || state.resumeAfterRender);
   engine.stop();
   document.querySelectorAll('.thumb').forEach(t => setPressed(t, t.dataset.id === id));
   hint.hidden = false; hint.textContent = '正在读画……'; hint.classList.add('loading');
@@ -1015,7 +1044,7 @@ function openFile(f) {
   history.replaceState(null, '', location.pathname + location.search);
   setStatus('你的图片只在这台设备中读画，不会上传。');
   loadImage(url, 'upload', title).finally(() => { if (previousUrl) URL.revokeObjectURL(previousUrl); });
-  $('lab').scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+  $(living?.active ? 'liveLab' : 'lab').scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
 }
 
 // ---------- 灵感配方与本机小抽屉 ----------
@@ -1082,6 +1111,23 @@ function imageForStorage() {
   return state.painting === 'upload' ? state.imageSource : compressImage(img);
 }
 
+const deletedWorks = [];
+function collectionFeedback(message) {
+  $('collectionFeedback').textContent = message;
+}
+function renderDeletedWorks(selectedId = deletedWorks.at(-1)?.id) {
+  const select = $('deletedWorkSelect');
+  select.replaceChildren(...[...deletedWorks].reverse().map(work => {
+    const option = document.createElement('option');
+    option.value = work.id;
+    option.textContent = `${work.title} · ${PRESETS[work.preset].name} · ${work.tempo} BPM`;
+    return option;
+  }));
+  select.value = selectedId || '';
+  $('deletedWorkLabel').hidden = deletedWorks.length < 2;
+  $('undoDeleteBtn').hidden = deletedWorks.length === 0;
+}
+
 function renderSavedWorks(works) {
   const box = $('savedWorks');
   if (!box) return;
@@ -1098,6 +1144,7 @@ function renderSavedWorks(works) {
   for (const work of works) {
     const card = document.createElement('article');
     card.className = 'saved-card';
+    card.dataset.workId = work.id;
     const open = document.createElement('button');
     open.className = 'saved-open'; open.type = 'button';
     open.setAttribute('aria-label', `打开作品：${work.title}`);
@@ -1106,10 +1153,16 @@ function renderSavedWorks(works) {
     thumb.alt = ''; thumb.loading = 'lazy';
     const name = document.createElement('strong'); name.textContent = work.title;
     const detail = document.createElement('small');
-    detail.textContent = `${PRESETS[work.preset].name} · ${work.tempo} BPM · ${new Date(work.createdAt).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}`;
-    open.append(thumb, name, detail);
+    detail.textContent = work.experience === 'trio' ? `画中合奏 · ${work.ensemble.voices.length} 位伙伴 · ${work.ensemble.tempo} BPM` : `${PRESETS[work.preset].name} · ${work.tempo} BPM · ${SCAN_NAMES[work.scan]}`;
+    const version = document.createElement('small');
+    version.className = 'saved-version';
+    const strokes = new Set(work.ink.map(mark => mark.stroke)).size;
+    version.textContent = `${work.experience === 'trio' ? '保留手势节奏与循环' : strokes ? `${strokes} 笔手绘` : '原画旋律'}${work.experience !== 'trio' && work.editPlans.length ? ` · ${work.editPlans.length} 步修改` : ''} · ${new Date(work.createdAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}`;
+    open.setAttribute('aria-label', `打开作品：${work.title}，${detail.textContent}，${version.textContent}`);
+    open.append(thumb, name, detail, version);
     open.addEventListener('click', async () => {
       creative?.record('work_restored');
+      if (work.experience !== 'trio') living?.setActive(false);
       applySettings(work);
       if (work.painting === 'upload') {
         setUploadThumb(work.image, work.title);
@@ -1118,36 +1171,67 @@ function renderSavedWorks(works) {
       const src = work.painting === 'upload' ? work.image : PAINTINGS.find(p => p.id === work.painting).file;
       const loaded = await loadImage(src, work.painting, work.title, true, work.ink);
       if (loaded) {
-        setStatus(`已打开「${work.title}」，参数和笔迹也回来了。`);
-        if (engine.limiter) engine.setPreset(state.preset).catch(e => setStatus('音色暂未加载：' + e.message, 'err'));
+        if (work.experience === 'trio') {
+          doRender(); living.restoreEnsemble(work.ensemble);
+          $('liveLab').scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+        } else {
+          setStatus(`已打开「${work.title}」，参数和笔迹也回来了。`);
+          if (engine.limiter) engine.setPreset(state.preset).catch(e => setStatus('音色暂未加载：' + e.message, 'err'));
+        }
       }
     });
     const remove = document.createElement('button');
     remove.type = 'button'; remove.className = 'saved-delete'; remove.textContent = '删除';
     remove.setAttribute('aria-label', `删除本机作品：${work.title}`);
     remove.addEventListener('click', () => {
-      try { renderSavedWorks(removeWork(work.id)); setStatus(`已从这台设备移除「${work.title}」。`); }
-      catch { setStatus('这次没能删除，请检查浏览器是否允许本地存储。', 'err'); }
+      try {
+        const next = removeWork(work.id);
+        const previous = deletedWorks.findIndex(item => item.id === work.id);
+        if (previous >= 0) deletedWorks.splice(previous, 1);
+        deletedWorks.push(work);
+        if (deletedWorks.length > 8) deletedWorks.shift();
+        renderSavedWorks(next);
+        renderDeletedWorks();
+        collectionFeedback(`已移除「${work.title}」。本页可找回最近 8 次删除，刷新或关闭后恢复记录会清空。`);
+        $('undoDeleteBtn').focus({ preventScroll: true });
+      }
+      catch { collectionFeedback('这次没能删除，请检查浏览器是否允许本地存储。'); }
     });
     card.append(open, remove); box.appendChild(card);
   }
 }
+$('undoDeleteBtn').addEventListener('click', () => {
+  const work = deletedWorks.find(item => item.id === $('deletedWorkSelect').value) || deletedWorks.at(-1);
+  if (!work) return;
+  try {
+    const works = restoreWork(work);
+    deletedWorks.splice(deletedWorks.indexOf(work), 1);
+    renderSavedWorks(works);
+    renderDeletedWorks();
+    collectionFeedback(`「${work.title}」回来了，原来的参数、笔迹和修改都在。${deletedWorks.length ? '还可以选择其他作品找回。' : ''}`);
+    const restoredCard = [...$('savedWorks').children].find(card => card.dataset.workId === work.id);
+    restoredCard?.querySelector('.saved-open')?.focus({ preventScroll: true });
+  } catch (error) { collectionFeedback(error.message || '暂时没能恢复，请稍后再试。'); }
+});
 $('saveBtn')?.addEventListener('click', () => {
   if (!state.result) return;
+  if (renderTimer) doRender();
   try {
-    const works = saveWork({ ...currentSettings(), id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const works = saveWork({ ...currentSettings(), id,
       createdAt: Date.now(), painting: state.painting, title: state.title,
       image: imageForStorage(), ink: state.ink });
     renderSavedWorks(works);
-    creative?.record('work_saved');
-    setStatus(`已收藏到本机小抽屉（${works.length}/8）。清除浏览器数据会移除它，喜欢的话也下载一份吧。`);
-  } catch (e) { setStatus(e.message || '这次没能保存，仍可下载作品带走。', 'err'); }
+    const added = works.some(work => work.id === id);
+    creative?.record(added ? 'work_saved' : 'work_already_saved');
+    $('saveFeedback').textContent = added ? `已收藏（${works.length}/8），在下方「我的小曲」里。清除浏览器数据会移除它。` : `这版已经收藏了（${works.length}/8），没有重复占位置。改几笔或换种音色后，可以再收藏新版。`;
+  } catch (e) { $('saveFeedback').textContent = e.message || '这次没能保存，仍可下载作品带走。'; }
 });
 window.addEventListener('storage', e => { if (e.key === 'gradient-lab:sketchbook:v1') renderSavedWorks(); });
 
 // Leave native buttons, sliders and inputs their own keyboard behavior.
 document.addEventListener('keydown', e => {
-  if (offlineBusy || anyDialogOpen()) return;
+  if (offlineBusy || anyDialogOpen() || living?.active) return;
   if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target.closest('input, textarea, select, button, a, summary, [contenteditable="true"]')) return;
   if (!state.result) return;
@@ -1166,6 +1250,7 @@ document.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener(
   const target = id ? $(id) : null;
   if (!id || target) {
     e.preventDefault();
+    if (id === 'collection' && living?.active) living.setActive(false);
     if (target) target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
     else window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
   }
@@ -1193,6 +1278,36 @@ creative = installCreativeStudio({
     if (arming) await arming.catch(() => {});
     await engine.ready;
     engine.stop();
+  },
+});
+
+living = installLivingTrio({
+  state, engine,
+  loadPainting: selectPainting,
+  upload: () => $('uploadInput').click(),
+  syncUrl: writeHash,
+  isOfflineBusy: () => offlineBusy,
+  modeChanged: () => creative?.changed({ clearUndo: false }),
+  saveEnsemble: ensemble => {
+    if (!state.result || !state.analysis) throw new Error('请等画作准备好再收藏。');
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const works = saveWork({ ...currentSettings(), id, createdAt: Date.now(),
+      title: state.title, painting: state.painting, image: imageForStorage(), ink: state.ink,
+      experience: 'trio', ensemble });
+    renderSavedWorks(works);
+    return { added: works.some(work => work.id === id), count: works.length };
+  },
+  restoreComposer: () => {
+    engine.load(state.result); engine.setInks(state.ink);
+    engine.setPreset(state.preset).catch(error => setStatus(error.message, 'err'));
+  },
+  setOffline: value => { offlineBusy = value; },
+  stopPlayback: () => { playIntent++; state.resumeAfterRender = false; playBtn.removeAttribute('aria-busy'); engine.stop(); },
+  prepareOffline: async () => {
+    playIntent++; state.resumeAfterRender = false; drawing = false;
+    clearTimeout(renderTimer); clearTimeout(inkSyncTimer); engine.stop();
+    if (arming) await arming.catch(() => {});
+    await engine.ready; engine.stop();
   },
 });
 

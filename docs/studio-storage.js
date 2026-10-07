@@ -1,4 +1,5 @@
-import { normalizeEditPlans } from './creative-edits.js?v=20261003-1';
+import { normalizeEditPlans } from './creative-edits.js?v=20261006-1';
+import { normalizeLivingEnsemble } from './living-score.js?v=20261006-1';
 
 // Local-only sketchbook. Keep the payload bounded, validate imported data,
 // and never silently discard an old piece when browser storage is full.
@@ -58,8 +59,15 @@ function cleanWork(work) {
   if (work.painting === 'upload' && !imageOK) return null;
   let editPlans;
   try { editPlans = normalizeEditPlans(work.editPlans || []); } catch { return null; }
+  const experience = work.experience || 'composer';
+  if (!['composer', 'trio'].includes(experience)) return null;
+  let ensemble = null;
+  if (experience === 'trio') {
+    try { ensemble = normalizeLivingEnsemble(work.ensemble); } catch { return null; }
+    if (!ensemble.voices.length) return null;
+  }
   return {
-    editPlans,
+    editPlans, experience, ensemble,
     id: work.id.slice(0, 80), title: work.title.slice(0, 120),
     createdAt: Number.isFinite(work.createdAt) ? work.createdAt : Date.now(),
     painting: work.painting, image: imageOK ? work.image : null,
@@ -80,20 +88,66 @@ export function loadWorks(storage = localStorage) {
   let data;
   try { data = JSON.parse(raw); } catch { throw new Error('本机作品记录暂时无法读取，请先保留现有数据。'); }
   if (!Array.isArray(data)) throw new Error('本机作品记录格式不正确。');
-  return data.map(cleanWork).filter(Boolean).slice(0, MAX_WORKS);
+  const works = data.map(cleanWork);
+  if (works.some(work => !work) || works.length > MAX_WORKS) throw new Error('部分本机作品无法安全读取，请先保留当前数据，避免覆盖。');
+  return works;
+}
+
+// A composition's identity excludes its save time, card ID and transient ink
+// IDs. Keep exact coordinates and stroke boundaries; never merge nearby art.
+export function workSignature(work) {
+  const valid = cleanWork(work);
+  if (!valid) return null;
+  let previousStroke, stroke = 0;
+  return JSON.stringify({
+    experience: valid.experience,
+    ensemble: valid.ensemble ? { ...valid.ensemble, voices: valid.ensemble.voices.map(voice => ({
+      loopBeats: voice.loopBeats, durationMs: voice.durationMs, offsetBeat: voice.offsetBeat, muted: voice.muted,
+      points: voice.points.map(point => [point.x, point.y, point.tMs, point.kind, point.note, point.vel, point.dur, point.color]),
+    })) } : null,
+    painting: valid.painting, image: valid.painting === 'upload' ? valid.image : null,
+    scan: valid.scan, tempo: valid.tempo, preset: valid.preset, mode: valid.mode,
+    seed: valid.seed, focus: valid.scan === 'ripple' ? valid.focus : null,
+    editPlans: valid.editPlans,
+    ink: valid.ink.map(mark => {
+      if (mark.stroke !== previousStroke) stroke++;
+      previousStroke = mark.stroke;
+      return [mark.x, mark.y, mark.kind, stroke];
+    }),
+  });
+}
+
+function writeWorks(works, storage) {
+  const payload = JSON.stringify(works);
+  if (payload.length > MAX_CHARS) throw new Error('本机空间快满了，请先导出并删除一份旧作品。');
+  try { storage.setItem(KEY, payload); }
+  catch { throw new Error('浏览器没有足够的本地空间，或未允许保存。你仍可以下载 MIDI 和明信片。'); }
+  return works;
 }
 
 export function saveWork(work, storage = localStorage) {
   const valid = cleanWork(work);
   if (!valid) throw new Error('这份作品还没有准备好，请等图片读完再试。');
   const works = loadWorks(storage);
+  const signature = workSignature(valid);
+  if (works.some(saved => workSignature(saved) === signature)) return works;
   if (works.length >= MAX_WORKS) throw new Error('小抽屉已经放满 8 份作品，请先删掉一份再收藏。');
-  const next = [valid, ...works];
-  const payload = JSON.stringify(next);
-  if (payload.length > MAX_CHARS) throw new Error('本机空间快满了，请先导出并删除一份旧作品。');
-  try { storage.setItem(KEY, payload); }
-  catch { throw new Error('浏览器没有足够的本地空间，或未允许保存。你仍可以下载 MIDI 和明信片。'); }
-  return next;
+  return writeWorks([valid, ...works], storage);
+}
+
+// Undo restores the actual saved record, rather than minting a new copy or
+// silently replacing work another tab may have saved in the meantime.
+export function restoreWork(work, storage = localStorage) {
+  const valid = cleanWork(work);
+  if (!valid) throw new Error('这份作品暂时无法恢复。');
+  const works = loadWorks(storage);
+  const existing = works.find(saved => saved.id === valid.id);
+  if (existing) {
+    if (workSignature(existing) !== workSignature(valid)) throw new Error('这份作品已在其他页面发生变化，请先保留当前版本。');
+    return works;
+  }
+  if (works.length >= MAX_WORKS) throw new Error('已经放满 8 份作品，请先腾出一个位置，再撤销删除。');
+  return writeWorks([valid, ...works], storage);
 }
 
 export function removeWork(id, storage = localStorage) {

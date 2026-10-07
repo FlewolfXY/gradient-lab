@@ -1,5 +1,5 @@
 /* Save the actual studio instruments as a portable, uncompressed stereo WAV. */
-import { buildPreset, buildInkRack, PRESETS, INKS } from './sound.js?v=20261003-1';
+import { buildPreset, buildInkRack, PRESETS, INKS } from './sound.js?v=20261006-1';
 
 const SAMPLE_RATE = 44100;
 const MAX_SECONDS = 180;

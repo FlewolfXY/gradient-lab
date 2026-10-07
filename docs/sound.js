@@ -217,6 +217,7 @@ export class Engine {
     this._muted = false;
     this._outputActive = false;
     this._lastInkPreviewAt = {};
+    this._inkPreviewGeneration = 0;
     this.tracks = { melody: true, chords: true, bass: true, ink: true };
   }
 
@@ -343,11 +344,11 @@ export class Engine {
     if (wasPlaying) this.play(pos);
   }
 
-  setInks(events) {
+  setInks(events, { releaseHeld = true } = {}) {
     this.inkEvents = events || [];
     this.inkParts.forEach(p => p.dispose());
     this.inkParts = [];
-    if (this.inkRack) Object.values(this.inkRack.synths).forEach(release);
+    if (releaseHeld && this.inkRack) Object.values(this.inkRack.synths).forEach(release);
     if (!this.result || !this.inkEvents.length) return;
     const rack = this._ensureInkRack();
     const spb = 60 / this.result.tempo;
@@ -380,10 +381,11 @@ export class Engine {
   async triggerInk(mark) {
     if (!this.tracks.ink || !INKS[mark.kind]) return;
     const generation = this._drawGeneration;
+    const previewGeneration = this._inkPreviewGeneration;
     await this.ensureStarted();
     const rack = this._ensureInkRack();
     await rack.ready;
-    if (generation !== this._drawGeneration || !this.tracks.ink) return;
+    if (generation !== this._drawGeneration || previewGeneration !== this._inkPreviewGeneration || !this.tracks.ink) return;
     const time = Tone.now();
     // Coalesced pointer events may all resume in the same microtask batch.
     // Preview at most 25 notes/sec per ink; all marks remain in the score.
@@ -395,6 +397,9 @@ export class Engine {
     const seconds = Math.max(0.12, mark.dur * 60 / (this.result?.tempo || 80));
     rack.synths[mark.kind].triggerAttackRelease(note, seconds, time, mark.vel / 127);
   }
+
+  // Abandon queued direct-preview attacks without rewinding scheduled music.
+  cancelInkPreviews() { this._inkPreviewGeneration++; }
 
   play(fromBeat = null) {
     if (!this.result) return;

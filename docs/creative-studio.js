@@ -1,6 +1,7 @@
-import { applyEditPlan, normalizeEditPlan, normalizeEditPlans, parseLocalIntent } from './creative-edits.js?v=20261003-1';
-import { renderWav } from './audio-export.js?v=20261003-1';
-import { MODEL_ENDPOINT } from './model-config.js?v=20261003-1';
+import { applyEditPlan, normalizeEditPlan, normalizeEditPlans, parseLocalIntent } from './creative-edits.js?v=20261006-1';
+import { renderWav } from './audio-export.js?v=20261006-1';
+import { MODEL_ENDPOINT } from './model-config.js?v=20261006-1';
+import { planEditPreview } from './creative-preview.js?v=20261006-1';
 
 const $ = id => document.getElementById(id);
 const GLOBAL_OPS = new Set(['slower', 'faster', 'airy']);
@@ -36,16 +37,18 @@ export function installCreativeStudio(api) {
   }
   function stopPreview() {
     previewVersion++; clearTimeout(previewTimer); stopPlayback();
-    $('listenBefore').classList.remove('active'); $('listenAfter').classList.remove('active');
+    for (const id of ['listenBefore', 'listenAfter']) {
+      $(id).classList.remove('active'); $(id).setAttribute('aria-pressed', 'false');
+    }
   }
   async function restoreCurrentAudio() {
     stopPreview();
     engine.load(state.result); engine.setInks(state.ink);
-    if (engine.presetName !== state.preset) await engine.setPreset(state.preset);
+    // A different preset may still be loading even when presetName matches.
+    await engine.setPreset(state.preset);
   }
-  function scopeBeat(plan, bars) {
-    if (plan.operations.every(op => op.type === 'fadeEnding') || plan.scope === 'ending') return Math.max(0, bars * 4 - 16);
-    return plan.scope === 'secondHalf' ? bars * 2 : 0;
+  function passageLabel(passage) {
+    return passage.firstBar === passage.lastBar ? `第 ${passage.firstBar} 小节` : `第 ${passage.firstBar}–${passage.lastBar} 小节`;
   }
   function propose(rawPlan, source, metadata = {}) {
     if (!state.result || busy) return;
@@ -60,12 +63,15 @@ export function installCreativeStudio(api) {
       feedback('当前声音已经是这个状态，这次没有需要改变的音符或参数。');
       record('edit_no_change', { source }); return;
     }
-    pending = { plan, applied, before: snapshot(), beforeResult: state.result,
+    const passage = planEditPreview(state.result, applied.result, plan, state.ink);
+    pending = { plan, applied, passage, before: snapshot(), beforeResult: state.result,
       beforePreset: state.preset, source, metadata, revision };
     stopPlayback();
     $('editChanges').replaceChildren(...applied.changes.map(text => { const li = document.createElement('li'); li.textContent = text; return li; }));
     $('editProtection').textContent = `${plan.lockMelody ? '旋律音符完全保留。' : '这次允许修改旋律。'}手绘笔迹始终保留。${source === 'deepseek' ? 'DeepSeek 提议，已通过本机规则校验。' : '快捷按钮使用本机规则。'}`;
-    $('compareStatus').textContent = '从修改处试听 8 秒。你的原版还在。';
+    const beforeSeconds = Math.round(passage.beforeSeconds), afterSeconds = Math.round(passage.afterSeconds);
+    const length = beforeSeconds === afterSeconds ? `各约 ${beforeSeconds} 秒` : `原版约 ${beforeSeconds} 秒，修改版约 ${afterSeconds} 秒`;
+    $('compareStatus').textContent = `A/B 对比同一段：${passageLabel(passage)}，${length}。你的原版还在。`;
     record('edit_proposed', { source, scope: plan.scope, lockMelody: plan.lockMelody, operations: plan.operations.map(op => op.type), ...metadata });
     editDialog.showModal();
   }
@@ -79,14 +85,19 @@ export function installCreativeStudio(api) {
     try {
       await engine.ensureStarted();
       if (token !== previewVersion || pending !== proposal) return;
-      if (engine.presetName !== preset) await engine.setPreset(preset); else await engine.ready;
+      await engine.setPreset(preset);
       if (token !== previewVersion || pending !== proposal) return;
       engine.load(result); engine.setInks(state.ink);
-      engine.play(scopeBeat(proposal.plan, result.bars));
-      $(which === 'before' ? 'listenBefore' : 'listenAfter').classList.add('active');
-      $('compareStatus').textContent = `${which === 'before' ? 'A · 原版' : 'B · 修改版'}正在播放，8 秒后自动停下。`;
-      record('edit_preview', { variant: which });
-      previewTimer = setTimeout(() => { stopPreview(); $('compareStatus').textContent = '试听结束，可以再对比一次，或决定保留哪一版。'; }, 8000);
+      const passage = proposal.passage, seconds = which === 'before' ? passage.beforeSeconds : passage.afterSeconds;
+      engine.play(passage.startBeat);
+      const button = $(which === 'before' ? 'listenBefore' : 'listenAfter');
+      button.classList.add('active'); button.setAttribute('aria-pressed', 'true');
+      $('compareStatus').textContent = `${which === 'before' ? 'A · 原版' : 'B · 修改版'}正在播放${passageLabel(passage)}，约 ${Math.round(seconds)} 秒后自动停下。`;
+      record('edit_preview', { variant: which, firstBar: passage.firstBar, lastBar: passage.lastBar, seconds });
+      previewTimer = setTimeout(() => {
+        if (token !== previewVersion || pending !== proposal) return;
+        stopPreview(); $('compareStatus').textContent = '试听结束，可以再对比一次，或决定保留哪一版。';
+      }, seconds * 1000);
     } catch (error) { if (token === previewVersion) $('compareStatus').textContent = `试听未能启动：${error.message}`; }
   }
   $('listenBefore').addEventListener('click', () => preview('before'));

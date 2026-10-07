@@ -1,4 +1,4 @@
-import './app.js?v=20261003-1';
+import './app.js?v=20261006-1';
 // Small controls stay separate from the image/score lifecycle.
 const $ = id => document.getElementById(id);
 $('uploadTrigger').addEventListener('click', () => $('uploadInput').click());
@@ -10,15 +10,16 @@ if (engine) {
   engine.setVolume?.(Number(volume.value) / 100);
   volume.addEventListener('input', () => {
     engine.setVolume?.(Number(volume.value) / 100);
-    if (muted && Number(volume.value) > 0) { muted = false; engine.setMuted?.(false); }
+    if (engine.muted && Number(volume.value) > 0) { muted = false; engine.setMuted?.(false); }
     updateMute();
   });
   function updateMute() {
+    muted = engine.muted;
     mute.setAttribute('aria-pressed', String(muted));
     mute.setAttribute('aria-label', muted ? '取消静音' : '静音');
     mute.title = muted ? '取消静音' : '静音';
   }
-  mute.addEventListener('click', () => { muted = !muted; engine.setMuted?.(muted); updateMute(); });
+  mute.addEventListener('click', () => { muted = !engine.muted; engine.setMuted?.(muted); updateMute(); });
   document.querySelectorAll('[data-track]').forEach(button => {
     button.addEventListener('click', () => {
       const enabled = button.getAttribute('aria-pressed') !== 'true';

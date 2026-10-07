@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from '../docs/studio-storage.js';
+import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork, restoreWork, workSignature } from '../docs/studio-storage.js';
 
 const storage = () => {
   const data = new Map();
@@ -35,7 +35,7 @@ test('malformed URLs and invalid brushes cannot enter the drawing state', () => 
 
 test('eight local works restore settings and strokes; a ninth cannot silently evict an earlier piece', () => {
   const store = storage();
-  for (let i = 0; i < 8; i++) saveWork(work(String(i)), store);
+  for (let i = 0; i < 8; i++) saveWork({ ...work(String(i)), seed: i }, store);
   const saved = loadWorks(store);
   assert.equal(saved.length, 8);
   assert.equal(saved[0].title, work('7').title);
@@ -45,6 +45,58 @@ test('eight local works restore settings and strokes; a ninth cannot silently ev
   assert.equal(loadWorks(store).length, 8);
   assert.equal(removeWork('2', store).length, 7);
   assert.equal(saveWork(work('9'), store).length, 8);
+});
+
+test('repeated saves are idempotent, retain the original record and do not write storage', () => {
+  const store = storage();
+  const original = saveWork(work('first'), store);
+  const readOnly = { getItem: store.getItem, setItem() { assert.fail('duplicate must not write'); } };
+  const repeated = saveWork({ ...work('second'), createdAt: 9999, ink: [{ ...work('x').ink[0], id: 'new-id', stroke: 97, pulse: 200 }] }, readOnly);
+  assert.deepEqual(repeated, original);
+  assert.equal(repeated.length, 1);
+  assert.equal(repeated[0].id, 'first');
+  assert.equal(repeated[0].createdAt, 1000);
+});
+
+test('a duplicate stays valid at full capacity while meaningful variants occupy new slots', () => {
+  const store = storage();
+  for (let i = 0; i < 8; i++) saveWork({ ...work(String(i)), seed: i }, store);
+  assert.equal(saveWork({ ...work('repeat'), seed: 3 }, store).length, 8);
+  const signature = workSignature(work('x'));
+  for (const change of [{ seed: 984 }, { tempo: 90 }, { preset: 'forest' }, { mode: 'minor' }, { scan: 'tb' },
+    { ink: [] }, { ink: [{ ...work('x').ink[0], x: 0.1000001 }] },
+    { editPlans: [{ scope: 'ending', lockMelody: true, operations: [{ type: 'softer' }] }] }]) {
+    assert.notEqual(workSignature({ ...work('x'), ...change }), signature);
+  }
+  assert.equal(workSignature({ ...work('x'), focus: [0.8, 0.2] }), signature, 'unused focus does not change linear scan');
+  assert.notEqual(workSignature({ ...work('x'), scan: 'ripple', focus: [0.8, 0.2] }), workSignature({ ...work('x'), scan: 'ripple' }));
+});
+
+test('uploaded image and stroke boundaries are part of composition identity', () => {
+  const upload = { ...work('x'), painting: 'upload', image: 'data:image/jpeg;base64,YWJj' };
+  assert.notEqual(workSignature(upload), workSignature({ ...upload, image: 'data:image/jpeg;base64,YWJk' }));
+  const ink = [work('x').ink[0], { ...work('x').ink[0], x: 0.5 }];
+  assert.notEqual(workSignature({ ...work('x'), ink }), workSignature({ ...work('x'), ink: [ink[0], { ...ink[1], stroke: 2 }] }));
+});
+
+test('delete and restore preserve complete original work and never overwrite another tab', () => {
+  const store = storage();
+  const saved = saveWork(work('x'), store)[0];
+  removeWork('x', store);
+  assert.deepEqual(restoreWork(saved, store), [saved]);
+  assert.deepEqual(restoreWork(saved, store), [saved], 'repeated undo is idempotent');
+  assert.throws(() => restoreWork({ ...saved, tempo: 105 }, store), /其他页面/);
+  assert.deepEqual(loadWorks(store), [saved]);
+});
+
+test('restore at capacity or with storage failure never discards saved work', () => {
+  const store = storage();
+  for (let i = 0; i < 8; i++) saveWork({ ...work(String(i)), seed: i }, store);
+  const before = loadWorks(store);
+  assert.throws(() => restoreWork(work('deleted'), store), /腾出/);
+  assert.deepEqual(loadWorks(store), before);
+  const full = { getItem: () => '[]', setItem: () => { throw new Error('QuotaExceededError'); } };
+  assert.throws(() => restoreWork(work('x'), full), /本地空间/);
 });
 
 test('uploaded art must have a local raster data URL, never a remote or scripted source', () => {
@@ -86,4 +138,14 @@ test('invalid saved edit plans cannot be accepted or silently truncate existing 
   assert.throws(() => saveWork({ ...work('x'), editPlans: Array(9).fill(plan) }, store));
   assert.throws(() => saveWork({ ...work('x'), editPlans: [{ ...plan, operations: [{ type: 'run-script' }] }] }, store));
   assert.equal(loadWorks(store).length, 0);
+});
+
+test('corrupt stored ensembles are never silently removed by a later save or deletion', () => {
+  const bad = { ...work('corrupt'), experience: 'trio', ensemble: { v: 1, tempo: 100, voices: [{ id: 'broken' }] } };
+  const store = { getItem: () => JSON.stringify([work('valid'), bad]),
+    setItem() { assert.fail('must not overwrite an unreadable original record'); } };
+  assert.throws(() => loadWorks(store), /避免覆盖/);
+  assert.throws(() => saveWork(work('next'), store), /避免覆盖/);
+  assert.throws(() => removeWork('valid', store), /避免覆盖/);
+  assert.throws(() => restoreWork(work('old'), store), /避免覆盖/);
 });
