@@ -1287,6 +1287,7 @@ function demoDelay(ms, token) {
 function cancelDemo() {
   demoToken++;
   demoActive = false;
+  demoAudioStarted = false;
   for (const id of demoTimers) clearTimeout(id);
   demoTimers.clear();
   $('demoBtn')?.setAttribute('aria-pressed', 'false');
@@ -1308,32 +1309,51 @@ function applyDemoSettings() {
   $('tempoVal').textContent = '80';
   document.querySelectorAll('.preset-btn').forEach(b => setPressed(b, b.dataset.preset === 'piano'));
 }
+let demoAudioStarted = false;
+function showDemoGate() {
+  const gate = $('demoGate');
+  if (!gate) return;
+  gate.hidden = false;
+}
+function hideDemoGate() {
+  const gate = $('demoGate');
+  if (gate) gate.hidden = true;
+}
 async function playDemo(token, kick) {
-  const stopResume = () => document.removeEventListener('pointerdown', resume, true);
-  function resume() {
-    if (token !== demoToken) { stopResume(); return; }
-    engine.ensureStarted().then(async () => {
-      if (token !== demoToken || !state.result || $('editDialog')?.open || engine.playing) return;
-      await armAudio();
-      if (token !== demoToken || !state.result || $('editDialog')?.open || engine.playing) return;
-      engine.play(0);
-      creative?.record('playback_started');
-      stopResume();
-    }).catch(() => {});
-  }
   try {
     await kick;
-    if (token !== demoToken || !state.result) return;
-    if (window.Tone?.context?.state !== 'running') {
-      document.addEventListener('pointerdown', resume, true);
-      return;
-    }
+    if (token !== demoToken || !state.result) return false;
     await armAudio();
-    if (token === demoToken) setStatus(DEMO_BEATS[0]);
-    if (token !== demoToken || !state.result || engine.playing) return;
-    engine.play(0);
+    if (token !== demoToken || !state.result) return false;
+    if (window.Tone?.context?.state !== 'running') return false;
+    if (!engine.playing) engine.play(0);
+    if (!engine.playing || engine.muted || !(engine.volume > 0)) return false;
+    demoAudioStarted = true;
+    setStatus(DEMO_BEATS[0]);
     creative?.record('playback_started');
-  } catch { /* 视觉脚本继续；声音等下一次手势 */ }
+    return true;
+  } catch { return false; }
+}
+function openDemoPostcard() {
+  return new Promise(resolve => {
+    if (!$('postcardDialog') || !state.result) { resolve(false); return; }
+    exportPostcard();
+    const started = performance.now();
+    const tick = () => {
+      const dialog = $('postcardDialog');
+      if (dialog?.open) {
+        $('postcardDownload')?.classList.add('demo-highlight');
+        $('postcardWav')?.classList.add('demo-highlight');
+        $('postcardWav')?.focus();
+        setStatus(DEMO_BEATS[2]);
+        resolve(true);
+        return;
+      }
+      if (performance.now() - started > 5000) resolve(false);
+      else requestAnimationFrame(tick);
+    };
+    tick();
+  });
 }
 async function runDemoTour(token, kick) {
   demoActive = true;
@@ -1343,48 +1363,86 @@ async function runDemoTour(token, kick) {
   if (!state.result || state.painting !== DEMO_PAINTING) {
     demoActive = false;
     $('demoBtn')?.setAttribute('aria-pressed', 'false');
+    showDemoGate();
     return;
   }
   hint.hidden = true;
   spotlight(document.querySelector('.listen-note'));
   $('barStory')?.classList.add('demo-highlight');
-  const audio = playDemo(token, kick);
-  if (!await demoDelay(8000, token)) return;
-  await audio;
-  if (token !== demoToken) return;
+  const started = await playDemo(token, kick);
+  if (!started || token !== demoToken) {
+    if (token === demoToken) {
+      demoActive = false;
+      $('demoBtn')?.setAttribute('aria-pressed', 'false');
+      showDemoGate();
+    }
+    return;
+  }
+  if (!await demoDelay(7000, token)) return;
   showDemoCaption(1);
   setStatus(DEMO_BEATS[1]);
   const chip = document.querySelector('[data-edit="sparser"]');
   spotlight(document.querySelector('.creative-card'));
   chip?.classList.add('demo-highlight');
-  if (!await demoDelay(2500, token)) return;
+  if (!await demoDelay(1500, token)) return;
   if (chip && !chip.disabled && !$('editDialog')?.open) chip.click();
   if (!await demoDelay(400, token)) return;
   showDemoCaption(1);
   const dialog = $('editDialog');
   if (dialog?.open) {
     let touched = false;
-    const mark = () => { touched = true; };
-    ['listenBefore', 'listenAfter', 'editPreviewStop', 'acceptEdit', 'discardEdit'].forEach(id => $(id)?.addEventListener('click', mark, { once: true }));
-    const closed = new Promise(resolve => dialog.addEventListener('close', () => resolve('closed'), { once: true }));
-    const why = await Promise.race([closed, demoDelay(11000, token).then(alive => alive ? 'timeout' : 'cancelled')]);
-    if (token !== demoToken || why === 'cancelled') return;
-    if (why === 'timeout' && dialog.open && !touched) dialog.close();
-    else if (dialog.open) await closed;
+    const mark = (event) => {
+      if (!event.isTrusted) return;
+      if (event.target.closest('#listenBefore, #listenAfter, #editPreviewStop, #acceptEdit, #discardEdit')) touched = true;
+    };
+    dialog.addEventListener('click', mark);
+    $('listenAfter')?.classList.add('demo-highlight');
+    if (!await demoDelay(800, token)) { dialog.removeEventListener('click', mark); return; }
+    $('listenAfter')?.classList.remove('demo-highlight');
+    $('acceptEdit')?.classList.add('demo-highlight');
+    if (!await demoDelay(800, token)) { dialog.removeEventListener('click', mark); return; }
+    if (token !== demoToken) { dialog.removeEventListener('click', mark); return; }
+    if (!touched && dialog.open) {
+      $('listenAfter')?.click();
+      if (!await demoDelay(2800, token)) { dialog.removeEventListener('click', mark); return; }
+      if (!touched && $('editDialog')?.open) {
+        const closed = new Promise(resolve => $('editDialog').addEventListener('close', () => resolve(), { once: true }));
+        $('acceptEdit')?.click();
+        // close() reloads the kept score and stops the preview. Wait for that
+        // before starting the accepted piece, or the reload wins the race.
+        await Promise.race([closed, demoDelay(3000, token)]);
+      }
+    } else if (touched && dialog.open) {
+      await new Promise(resolve => {
+        const done = () => resolve();
+        dialog.addEventListener('close', done, { once: true });
+        demoDelay(20000, token).then(done);
+      });
+    }
+    dialog.removeEventListener('click', mark);
     if (token !== demoToken) return;
   }
+  if (!state.editPlans.length) return;
   showDemoCaption(2);
   setStatus(DEMO_BEATS[2]);
-  spotlight($('takeaway'));
-  $('exportAudioBtn')?.classList.add('demo-highlight');
+  // The dialog close reloads the kept score and stops the A/B preview.
+  // Start that score again so the postcard is the edited piece.
+  try {
+    await engine.ready;
+    if (token === demoToken && state.result && !engine.playing) engine.play(0);
+  } catch { /* the preview already sounded; the postcard still opens */ }
+  if (token !== demoToken) return;
+  await openDemoPostcard();
   demoActive = false;
   $('demoBtn')?.setAttribute('aria-pressed', 'false');
 }
 async function beginDemo() {
   const token = ++demoToken;
   captionDismissed = false;
+  demoAudioStarted = false;
   for (const id of demoTimers) clearTimeout(id);
   demoTimers.clear();
+  hideDemoGate();
   demoActive = true;
   showDemoCaption(0);
   setStatus(DEMO_BEATS[0]);
@@ -1393,17 +1451,22 @@ async function beginDemo() {
   applyDemoSettings();
   const loaded = await selectPainting(DEMO_PAINTING, false);
   if (token !== demoToken || !loaded) {
-    if (token === demoToken) { demoActive = false; $('demoBtn')?.setAttribute('aria-pressed', 'false'); }
+    if (token === demoToken) {
+      demoActive = false;
+      $('demoBtn')?.setAttribute('aria-pressed', 'false');
+      showDemoGate();
+    }
     return;
   }
   if (renderTimer) doRender();
   await runDemoTour(token, kick);
 }
 $('demoBtn')?.addEventListener('click', () => { beginDemo(); });
+$('demoGateBtn')?.addEventListener('click', () => { beginDemo(); });
 $('demoCaptionClose')?.addEventListener('click', () => { captionDismissed = true; hideDemoCaption(); });
 document.addEventListener('click', event => {
-  if (!demoActive) return;
-  if (event.target.closest('#demoBtn, #demoCaption, #playBtn, #stopBtn, #muteBtn, #editDialog, [data-edit="sparser"]')) return;
+  if (!demoActive || !demoAudioStarted) return;
+  if (!event.target.closest('.thumb, #uploadTrigger, #surpriseBtn')) return;
   cancelDemo();
 }, true);
 
@@ -1414,18 +1477,14 @@ const demoFromQuery = new URLSearchParams(location.search).get('demo') === '1';
 if (demoFromQuery) {
   state.painting = DEMO_PAINTING;
   applyDemoSettings();
-  showDemoCaption(0);
-  setStatus(DEMO_BEATS[0]);
+  showDemoGate();
 }
 setScan(state.scan);
 setMode(state.mode);
 tempoSlider.value = state.tempo; $('tempoVal').textContent = state.tempo;
 document.querySelectorAll('.preset-btn').forEach(x => setPressed(x, x.dataset.preset === state.preset));
-selectPainting(state.painting || PAINTINGS[0].id, true, state.ink).then(loaded => {
+selectPainting(state.painting || PAINTINGS[0].id, true, state.ink).then(() => {
   if (renderTimer) doRender();
-  if (demoFromQuery && loaded && state.painting === DEMO_PAINTING) {
-    runDemoTour(++demoToken, engine.ensureStarted().catch(() => {}));
-  }
 });
 renderSavedWorks();
 schedulePreload();

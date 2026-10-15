@@ -53,13 +53,18 @@
 .demo-caption [data-beat].is-on{color:#9c624c;font-weight:700}
 .demo-caption .demo-dot{margin:0 4px;color:#b08968}
 #demoCaptionClose{border:0;background:transparent;color:#a89884;width:28px;height:28px;border-radius:50%;font-size:16px;line-height:1;margin-left:6px;flex:none}
-.demo-highlight{box-shadow:0 0 0 2px #c4896a;border-radius:14px}
+.demo-highlight{box-shadow:0 0 0 2px #c4896a;outline:2px solid #c4896a;outline-offset:3px;border-radius:14px}
+.demo-gate{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:24px;background:#342e2ad4}
+.demo-gate-card{width:min(460px,100%);background:#fffaf1;border:1px solid #e4d8c4;border-radius:22px;padding:28px 26px 24px;box-shadow:0 22px 70px #34261555}
+.demo-gate-card h2{font-family:"Songti SC","STSong",serif;font-size:30px;font-weight:650;margin:0 0 12px}
+.demo-gate-card p:not(.eyebrow){margin:0 0 18px;font-size:14px;line-height:1.75;color:#5e564c}
+.demo-gate-card .big-btn{width:100%}
+.postcard-actions .postcard-wav{margin-top:8px}
 #barStory.demo-highlight{background:#fff6e8;padding:2px 4px;border-radius:6px}
 #takeaway{scroll-margin-top:78px}
 #barStory{scroll-margin-top:88px}
 .postcard-actions{position:sticky;bottom:0;background:#f7f1e6;padding-bottom:2px}
-.postcard-actions .postcard-wav{display:block;width:100%;margin-top:8px;border:1px solid #d9cbb6;background:#fffdf8;color:#6a5344;border-radius:999px;padding:12px;font-size:12px;font-weight:650}
-.postcard-actions .postcard-wav:hover:not(:disabled){background:#f6efe4}
+.postcard-actions .postcard-wav{display:block;width:100%;margin-top:8px}
 @media(max-width:720px){
   .hero-actions{align-items:stretch;width:100%;margin-top:14px}
   .demo-btn{width:100%}

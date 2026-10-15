@@ -10,7 +10,7 @@
 <meta property="og:description" content="先听听，再添一笔。把一幅画变成能继续创作的音乐。">
 <meta property="og:image" content="https://flewolfxy.github.io/gradient-lab/paintings/mist.jpg">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css?v=20261016-1">
+<link rel="stylesheet" href="style.css?v=20261016-3">
 </head>
 <body>
 <a class="skip-link" href="#lab">跳到创作工作台</a>
@@ -108,18 +108,26 @@
   <footer><a class="footer-brand" href="https://github.com/FlewolfXY/gradient-lab" target="_blank" rel="noopener">Gradient Lab <span>by Flewolf ↗</span></a><p>让一点好奇心，长成一点自己的东西。</p><small>音频引擎 Tone.js · 钢琴采样 Salamander Grand Piano <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener">CC BY 3.0</a></small></footer>
 </div>
 <div class="drop-veil" id="dropVeil"><span>把画放在这里，听听它的声音。<small>图片只在本机处理</small></span></div>
+<div id="demoGate" class="demo-gate" hidden>
+  <div class="demo-gate-card" role="dialog" aria-modal="true" aria-labelledby="demoGateTitle">
+    <p class="eyebrow">60 秒走一遍</p>
+    <h2 id="demoGateTitle">点一下，开始听</h2>
+    <p>规则把画译成曲；DeepSeek 只规划可试听的修改，浏览器执行固定动作。图片与声音不上传。</p>
+    <button type="button" id="demoGateBtn" class="big-btn">点一下，开始听 · 60 秒</button>
+  </div>
+</div>
 <div class="demo-caption" id="demoCaption" popover="manual" hidden role="status">
   <span data-beat="0">规则把颜色译成和弦</span><span class="demo-dot" aria-hidden="true"> · </span><span data-beat="1">AI 只提出可撤回的编辑</span><span class="demo-dot" aria-hidden="true"> · </span><span data-beat="2">声音留在本机</span>
   <button type="button" id="demoCaptionClose" aria-label="关闭说明">×</button>
 </div>
-<dialog id="postcardDialog" class="postcard-dialog" aria-labelledby="postcardTitle"><div class="postcard-header"><div><p class="eyebrow">A LITTLE KEEPSAKE</p><h2 id="postcardTitle">给这一刻，留张明信片。</h2></div><button id="postcardClose" class="icon-btn" aria-label="关闭明信片预览">×</button></div><img id="postcardPreview" alt="音乐明信片预览"><div class="postcard-actions"><p>明信片是一张静态图片。可以一并带走开头 30 秒的 WAV：声音在本机制作，不会上传。</p><a id="postcardDownload" class="big-btn" download>保存明信片 PNG ↓</a><button id="postcardWav" class="postcard-wav" type="button" disabled>一并带走 30 秒声音</button></div></dialog>
+<dialog id="postcardDialog" class="postcard-dialog" aria-labelledby="postcardTitle"><div class="postcard-header"><div><p class="eyebrow">A LITTLE KEEPSAKE</p><h2 id="postcardTitle">给这一刻，留张明信片。</h2></div><button id="postcardClose" class="icon-btn" aria-label="关闭明信片预览">×</button></div><img id="postcardPreview" alt="音乐明信片预览"><div class="postcard-actions"><p>明信片是一张静态图片。可以一并带走开头 30 秒的 WAV：声音在本机制作，不会上传。</p><a id="postcardDownload" class="big-btn" download>保存明信片 PNG ↓</a><button id="postcardWav" class="big-btn postcard-wav" type="button" disabled>一并带走 30 秒声音</button></div></dialog>
 
 <dialog id="editDialog" class="studio-dialog edit-dialog" aria-labelledby="editDialogTitle"><p class="eyebrow">KEEP WHAT YOU LOVE</p><h2 id="editDialogTitle">先听听，再决定。</h2><ul id="editChanges"></ul><p id="editProtection" class="tip"></p><div class="compare-buttons"><button id="listenBefore" class="compare-btn">A · 听修改前</button><button id="listenAfter" class="compare-btn">B · 听修改后</button><button id="editPreviewStop" class="icon-btn" aria-label="停止对比试听">■</button></div><p id="compareStatus" role="status" aria-live="polite">从修改处试听 8 秒。你的原版还在。</p><div class="dialog-actions"><button id="discardEdit" class="text-btn">回到原版</button><button id="acceptEdit" class="big-btn">喜欢，留下这版 ✓</button></div></dialog>
 <dialog id="audioDialog" class="studio-dialog audio-dialog" aria-labelledby="audioDialogTitle"><div class="postcard-header"><div><p class="eyebrow">A LITTLE PIECE OF SOUND</p><h2 id="audioDialogTitle">把声音装进口袋。</h2></div><button id="audioClose" class="icon-btn" aria-label="关闭音频预览">×</button></div><div id="audioMaking" class="audio-making"><span aria-hidden="true">♫</span><p id="audioProgress" role="status" aria-live="polite">正在准备声音…</p></div><div id="audioReady" hidden><p id="audioDescription"></p><audio id="audioPreview" controls preload="metadata"></audio><a id="audioDownload" class="big-btn" download>保存音频 WAV ↓</a><p id="audioNotice" class="tip"></p><div class="use-feedback"><p>这段声音，准备放在哪里？<small>可选，仅记在本机，不会发送。</small></p><div><button data-use="visual-work">我的画 / 视频</button><button data-use="keep">先留着喜欢</button><button data-use="not-yet">还想再改改</button></div><p id="useFeedbackMessage" role="status"></p></div></div></dialog>
 
 <noscript><p class="noscript-note">这个小作坊需要 JavaScript 才能把画面变成音乐。请在浏览器中启用它，再来听听。</p></noscript>
 <script src="vendor/Tone-15.1.22.js"></script>
-<script type="module" src="app.js?v=20261016-1"></script>
-<script type="module" src="studio-controls.js?v=20261016-1"></script>
+<script type="module" src="app.js?v=20261016-3"></script>
+<script type="module" src="studio-controls.js?v=20261016-3"></script>
 </body>
 </html>
