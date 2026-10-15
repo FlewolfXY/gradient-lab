@@ -30,6 +30,7 @@ export function installCreativeStudio(api) {
   }
   function update() {
     $('exportAudioBtn').disabled = !state.result || busy;
+    if ($('postcardWav')) $('postcardWav').disabled = !state.result || busy;
     document.querySelectorAll('[data-edit]').forEach(button => { button.disabled = !state.result || busy; });
     $('undoEditBtn').hidden = !undo.length && !state.editPlans.length;
     $('editHistory').textContent = state.editPlans.length ? `这首小曲保留了 ${state.editPlans.length} 步局部修改；收藏与分享会一起带走。` : '';
@@ -174,11 +175,10 @@ export function installCreativeStudio(api) {
     if (audioUrl) { const old = audioUrl; setTimeout(() => URL.revokeObjectURL(old), 30000); audioUrl = null; }
     $('audioDownload').removeAttribute('href');
   }
-  $('exportAudioBtn').addEventListener('click', async () => {
+  async function exportAudio(seconds) {
     if (!state.result || busy) return;
     api.settleRender();
     changed({ clearUndo: false }); busy = true; update(); releaseAudio();
-    const seconds = $('exportLength').value === 'full' ? null : Number($('exportLength').value);
     const previousFocus = document.activeElement;
     $('audioMaking').hidden = false; $('audioReady').hidden = true; $('audioClose').disabled = true;
     $('audioProgress').textContent = '正在准备声音…'; $('useFeedbackMessage').textContent = '';
@@ -204,7 +204,12 @@ export function installCreativeStudio(api) {
       setOffline(false); busy = false; $('audioClose').disabled = false; update();
       audioDialog.addEventListener('close', () => previousFocus?.focus(), { once: true });
     }
+  }
+  $('exportAudioBtn').addEventListener('click', () => {
+    const seconds = $('exportLength').value === 'full' ? null : Number($('exportLength').value);
+    exportAudio(seconds);
   });
+  $('postcardWav')?.addEventListener('click', () => exportAudio(30));
   audioDialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
   $('audioClose').addEventListener('click', () => { if (!busy) audioDialog.close(); });
   audioDialog.addEventListener('close', releaseAudio);
@@ -222,5 +227,5 @@ export function installCreativeStudio(api) {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   });
   record('studio_opened'); update();
-  return { changed, update, record, get offlineBusy() { return busy; }, get comparing() { return editDialog.open; } };
+  return { changed, update, record, exportAudio, get offlineBusy() { return busy; }, get comparing() { return editDialog.open; } };
 }

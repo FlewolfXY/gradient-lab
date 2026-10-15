@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { analyzeImage, brightestPoint, summon } from '../docs/paint2score.js';
+import { analyzeImage, brightestPoint, summon, PITCH_NAMES } from '../docs/paint2score.js';
 import { buildMidi } from '../docs/midi.js';
 
 // Canvas sampling is mocked; these tests exercise the image-to-score rules and
@@ -84,6 +84,26 @@ test('ordinary opaque images preserve the existing musical mapping in all three 
     assert.equal(hash, expected[scan]);
     assert.deepEqual(result, summon(img, { scan, seed: 42 }));
   }
+});
+
+test('two competing hues can each set the key; a single hue stays quiet', () => {
+  const split = analyze(40, 20, (x) => x < 20 ? [255, 120, 0, 255] : [20, 60, 255, 255]);
+  const result = summon(split, { scan: 'lr', seed: 1 });
+  const conflict = result.global.hueConflict;
+  assert.ok(conflict);
+  assert.notEqual(conflict.a.tonicPc, conflict.b.tonicPc);
+  assert.ok(conflict.weights[0] >= conflict.weights[1]);
+  assert.ok(conflict.weights[1] / conflict.weights[0] >= 0.62);
+  assert.equal(result.global.tonicPc, conflict.a.tonicPc);
+  const other = PITCH_NAMES[conflict.b.tonicPc];
+  const switched = summon(split, { scan: 'lr', seed: 1, key: other });
+  assert.equal(switched.tonic, other);
+  assert.notEqual(switched.global.tonicPc, result.global.tonicPc);
+  assert.equal(summon(analyze(24, 16, () => [210, 32, 40, 255]), { seed: 3 }).global.hueConflict, null);
+  const neighbors = analyze(32, 16, (x) => x < 16 ? [220, 20, 30, 255] : [230, 120, 20, 255]);
+  assert.equal(summon(neighbors, { seed: 3 }).global.hueConflict, null);
+  const accent = analyze(40, 16, (x) => x < 32 ? [210, 32, 40, 255] : [40, 70, 220, 255]);
+  assert.equal(summon(accent, { seed: 3 }).global.hueConflict, null);
 });
 
 test('malformed shared parameters cannot create invalid keys or unbounded generation', () => {
