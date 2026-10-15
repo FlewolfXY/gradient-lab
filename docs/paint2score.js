@@ -125,6 +125,44 @@ function circularMean(cos, sin) {
   return (Math.atan2(sin, cos) * 180 / Math.PI + 360) % 360;
 }
 
+/**
+ * Two saturated camps far apart on the wheel. The circular mean can then
+ * land on a hue the painting does not contain; callers may pick either peak.
+ * Bins follow the existing key buckets (round to 30°), not a shifted grid.
+ */
+function detectHueConflict(img) {
+  const { H, S } = img;
+  const bins = new Float64Array(12);
+  const cos = new Float64Array(12);
+  const sin = new Float64Array(12);
+  let total = 0;
+  for (let i = 0; i < H.length; i++) {
+    if (S[i] < 0.2) continue;
+    const wgt = S[i] * S[i];
+    const bin = Math.round(H[i] / 30) % 12;
+    const angle = H[i] * Math.PI / 180;
+    bins[bin] += wgt;
+    cos[bin] += Math.cos(angle) * wgt;
+    sin[bin] += Math.sin(angle) * wgt;
+    total += wgt;
+  }
+  if (!(total > 0)) return null;
+  const ranked = [...bins.keys()].sort((i, j) => bins[j] - bins[i] || i - j);
+  const primary = ranked[0], secondary = ranked[1];
+  const w0 = bins[primary], w1 = bins[secondary];
+  if (!(w0 > 0) || w1 / w0 < 0.62) return null;
+  const sep = Math.min((primary - secondary + 12) % 12, (secondary - primary + 12) % 12);
+  if (sep < 2 || (w0 + w1) / total < 0.58) return null;
+  const peak = (index, weight) => ({
+    hue: circularMean(cos[index], sin[index]),
+    weight: weight / total,
+    tonicPc: (index * 7) % 12,
+  });
+  const a = peak(primary, w0), b = peak(secondary, w1);
+  if (a.tonicPc === b.tonicPc) return null;
+  return { a, b, weights: [a.weight, b.weight] };
+}
+
 export function analyzeGlobal(img) {
   const { H, S, V } = img;
   let c = 0, s = 0, vsum = 0;
@@ -140,7 +178,10 @@ export function analyzeGlobal(img) {
   const warmth = (Math.cos(hue * Math.PI / 180) + 1) / 2;
   const brightness = vsum / H.length;
   const modeScore = 0.55 * brightness + 0.45 * warmth;
-  return { hue, warmth, brightness, tonicPc, mode: modeScore > 0.5 ? 'major' : 'minor', modeScore };
+  return {
+    hue, warmth, brightness, tonicPc, mode: modeScore > 0.5 ? 'major' : 'minor', modeScore,
+    hueConflict: detectHueConflict(img),
+  };
 }
 
 /** 默认涟漪焦点：粗网格上的最亮格子中心。 */
@@ -407,6 +448,9 @@ export function summon(img, opts = {}) {
   const rnd = mulberry32(seed);
 
   const g = analyzeGlobal(img);
+  // Competing hues default to the heavier peak. An explicit key still wins,
+  // including the other peak. Single-hue paintings keep the circular mean.
+  if (g.hueConflict) g.tonicPc = g.hueConflict.a.tonicPc;
   if (PITCH_NAMES.includes(opts.key)) g.tonicPc = PITCH_NAMES.indexOf(opts.key);
   if (opts.mode === 'major' || opts.mode === 'minor') g.mode = opts.mode;
 

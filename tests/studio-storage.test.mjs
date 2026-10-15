@@ -78,6 +78,11 @@ test('saved work round-trips local edits with exact scope and melody protection'
   assert.equal(restored.editPlans[1].lockMelody, false);
   assert.equal(restored.editPlans[1].operations[0].amount, 0.25);
   assert.deepEqual(restored.ink, loadWorks(store)[0].ink);
+  assert.equal(restored.hueKey, null);
+  saveWork({ ...work('keyed'), hueKey: 'F#' }, store);
+  assert.equal(loadWorks(store)[0].hueKey, 'F#');
+  saveWork({ ...work('badkey'), hueKey: 'H' }, store);
+  assert.equal(loadWorks(store)[0].hueKey, null);
 });
 
 test('invalid saved edit plans cannot be accepted or silently truncate existing edits', () => {

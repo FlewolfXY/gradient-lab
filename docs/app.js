@@ -1,10 +1,10 @@
-import { analyzeImage, summon, brightestPoint, SCAN_NAMES } from './paint2score.js?v=20261003-1';
+import { analyzeImage, summon, brightestPoint, analyzeGlobal, SCAN_NAMES, PITCH_NAMES } from './paint2score.js?v=20261016-1';
 import { buildMidi } from './midi.js?v=20261003-1';
 import { Engine, PRESETS, INKS } from './sound.js?v=20261003-1';
-import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js?v=20261003-1';
+import { cleanInk, encodeInk, decodeInk, loadWorks, saveWork, removeWork } from './studio-storage.js?v=20261016-1';
 
 import { replayEditPlans, encodeEditPlans, decodeEditPlans, normalizeEditPlans } from './creative-edits.js?v=20261003-1';
-import { installCreativeStudio } from './creative-studio.js?v=20261003-1';
+import { installCreativeStudio } from './creative-studio.js?v=20261016-1';
 
 const PAINTINGS = [
   { id: 'prism', title: '棱镜', file: 'paintings/prism.jpg' },
@@ -43,6 +43,7 @@ const state = {
   loadVersion: 0,
   editPlans: [],
   editChanges: [],
+  hueKey: null,
 };
 const engine = new Engine();
 window.__gl = { state, engine };
@@ -82,6 +83,7 @@ function readHash() {
   if (p.get('m') === 'major' || p.get('m') === 'minor') state.mode = p.get('m');
   if (p.get('k') && PRESETS[p.get('k')]) state.preset = p.get('k');
   if (/^-?\d+$/.test(p.get('seed') || '')) state.seed = Number(p.get('seed')) >>> 0;
+  if (PITCH_NAMES.includes(p.get('hk'))) state.hueKey = p.get('hk');
   state.ink = decodeInk(p.get('i'));
   try { state.editPlans = decodeEditPlans(p.get('e') || ''); }
   catch { state.editPlans = []; setStatus('分享中的修改记录无效，已打开原始乐谱。', 'err'); }
@@ -96,6 +98,7 @@ function writeHash() {
   if (state.mode) p.set('m', state.mode);
   p.set('k', state.preset);
   if (state.seed !== null || state.result) p.set('seed', state.seed ?? state.result.seed);
+  if (state.hueKey) p.set('hk', state.hueKey);
   if (state.ink.length) p.set('i', encodeInk(state.ink));
   if (state.editPlans.length) p.set('e', encodeEditPlans(state.editPlans));
   history.replaceState(null, '', '#' + p.toString());
@@ -110,12 +113,21 @@ function requestRender(immediate = false) {
   renderTimer = setTimeout(doRender, immediate ? 0 : 200);
 }
 
+function reconcileHueKey() {
+  const conflict = analyzeGlobal(state.analysis).hueConflict;
+  if (!conflict) { state.hueKey = null; return; }
+  const allowed = [PITCH_NAMES[conflict.a.tonicPc], PITCH_NAMES[conflict.b.tonicPc]];
+  if (state.hueKey && !allowed.includes(state.hueKey)) state.hueKey = null;
+}
+
 function doRender() {
   clearTimeout(renderTimer); renderTimer = null;
   if (!state.analysis || offlineBusy) return;
+  reconcileHueKey();
   state.result = summon(state.analysis, {
     scan: state.scan, focus: state.scan === 'ripple' ? state.focus : null,
     tempo: state.tempo, mode: state.mode || null, seed: state.seed,
+    key: state.hueKey || undefined,
   });
   state.seed = state.result.seed;
   const edited = replayEditPlans(state.result, state.editPlans);
@@ -136,6 +148,7 @@ function doRender() {
   writeHash();
   schedulePreload();
   if ($('saveBtn')) $('saveBtn').disabled = false;
+  updateHueChoice();
   creative?.update();
   if (state.resumeAfterRender) {
     state.resumeAfterRender = false;
@@ -234,6 +247,10 @@ function buildReport() {
   const r = state.result, g = r.global;
   const modeCn = g.mode === 'major' ? '大调' : '小调';
   const focusTxt = r.scan === 'ripple' ? `，焦点 (${r.focus[0].toFixed(2)}, ${r.focus[1].toFixed(2)})` : '';
+  const conflict = g.hueConflict;
+  const hueReading = conflict
+    ? `两种主色势均力敌：<b>${colorName(conflict.a.hue, 1)}</b> 与 <b>${colorName(conflict.b.hue, 1)}</b>。当前按 <b>${g.tonicPc === conflict.b.tonicPc ? colorName(conflict.b.hue, 1) : colorName(conflict.a.hue, 1)}</b> 定调，不是落在两者之间的平均色。`
+    : `全画主色相 <b>${g.hue.toFixed(0)}°</b>（饱和度加权，灰色不投票）。`;
   const rows = r.barFeats.map((s, i) => {
     const c = r.chords[i];
     const why = c.reason + (c.tension ? '；' + c.tension : '');
@@ -246,7 +263,7 @@ function buildReport() {
     <h2>${escapeHtml(state.title)} 的读画报告</h2>
     <p class="lede">
       扫描方式 <b>${SCAN_NAMES[r.scan]}</b>${focusTxt}（每小节读掉等量的颜料）。
-      全画主色相 <b>${g.hue.toFixed(0)}°</b>（饱和度加权，灰色不投票）。
+      ${hueReading}
       冷暖 ${g.warmth.toFixed(2)}、明度 ${g.brightness.toFixed(2)} → 调式判定分 ${g.modeScore.toFixed(2)}（&gt;0.5 大调）→ <b>${r.tonic} ${modeCn}</b>。
       ${r.tempo} BPM，${r.bars} 小节，种子 ${r.seed}。
       ${state.editPlans.length ? '<br><b>这份表记录原始读画依据；当前乐谱还应用了以下修改：</b>' + state.editChanges.map(escapeHtml).join('；') : ''}
@@ -1032,6 +1049,7 @@ function applySettings(settings) {
   state.seed = settings.seed ?? null;
   if ('editPlans' in settings) state.editPlans = normalizeEditPlans(settings.editPlans || []);
   if ('focus' in settings) state.focus = settings.focus;
+  if ('hueKey' in settings) state.hueKey = PITCH_NAMES.includes(settings.hueKey) ? settings.hueKey : null;
   setScan(state.scan); setMode(state.mode);
   tempoSlider.value = state.tempo; $('tempoVal').textContent = state.tempo;
   document.querySelectorAll('.preset-btn').forEach(b => setPressed(b, b.dataset.preset === state.preset));
@@ -1039,7 +1057,7 @@ function applySettings(settings) {
 function currentSettings() {
   return { scan: state.scan, mode: state.mode, tempo: state.tempo, preset: state.preset,
     seed: state.seed ?? state.result?.seed ?? null, focus: state.focus ? [...state.focus] : null,
-    editPlans: normalizeEditPlans(state.editPlans) };
+    hueKey: state.hueKey, editPlans: normalizeEditPlans(state.editPlans) };
 }
 async function changeRecipe(settings, description) {
   const intent = playIntent;
@@ -1196,13 +1214,218 @@ creative = installCreativeStudio({
   },
 });
 
+function updateHueChoice() {
+  const box = $('hueChoice');
+  const conflict = state.result?.global?.hueConflict;
+  if (!box) return;
+  if (!conflict) { box.hidden = true; return; }
+  const active = state.result.global.tonicPc === conflict.b.tonicPc ? 'b' : 'a';
+  const current = colorName(conflict[active].hue, 1);
+  const other = colorName(conflict[active === 'a' ? 'b' : 'a'].hue, 1);
+  $('hueChoiceText').textContent = `这幅画有两种势均力敌的主色。现在按「${current}」定调；要不要改听「${other}」？`;
+  for (const which of ['a', 'b']) {
+    const button = $(which === 'a' ? 'hueChoiceA' : 'hueChoiceB');
+    const peak = conflict[which];
+    button.textContent = colorName(peak.hue, 1);
+    button.style.setProperty('--swatch', hsvToCss(peak.hue, 0.72, 0.9));
+    button.setAttribute('aria-label', `按${colorName(peak.hue, 1)}定调`);
+    setPressed(button, which === active);
+  }
+  box.hidden = false;
+}
+
+function chooseHue(which) {
+  const conflict = state.result?.global?.hueConflict;
+  if (!conflict || offlineBusy) return;
+  state.hueKey = PITCH_NAMES[conflict[which].tonicPc];
+  creative?.changed();
+  requestRender(true);
+}
+$('hueChoiceA')?.addEventListener('click', () => chooseHue('a'));
+$('hueChoiceB')?.addEventListener('click', () => chooseHue('b'));
+
+// ---------- 60 秒演示（内置画 + 本机 chip，不调用模型） ----------
+
+const DEMO_BEATS = ['规则把颜色译成和弦', 'AI 只提出可撤回的编辑', '声音留在本机'];
+const DEMO_PAINTING = 'mist';
+let demoToken = 0;
+let demoActive = false;
+let captionDismissed = false;
+const demoTimers = new Set();
+
+function showDemoCaption(index) {
+  const cap = $('demoCaption');
+  if (!cap || captionDismissed) return;
+  cap.hidden = false;
+  cap.querySelectorAll('[data-beat]').forEach(el => el.classList.toggle('is-on', Number(el.dataset.beat) === index));
+  if (typeof cap.showPopover !== 'function') return;
+  cap.classList.add('is-pop');
+  try {
+    if (cap.matches(':popover-open')) cap.hidePopover();
+    cap.showPopover();
+  } catch { cap.classList.remove('is-pop'); }
+}
+function hideDemoCaption({ clearHighlights = false } = {}) {
+  const cap = $('demoCaption');
+  if (cap?.matches(':popover-open')) { try { cap.hidePopover(); } catch { /* already closed */ } }
+  cap?.classList.remove('is-pop');
+  if (cap) cap.hidden = true;
+  if (clearHighlights) document.querySelectorAll('.demo-highlight').forEach(el => el.classList.remove('demo-highlight'));
+}
+function spotlight(el) {
+  document.querySelectorAll('.demo-highlight').forEach(node => node.classList.remove('demo-highlight'));
+  if (!el) return;
+  el.classList.add('demo-highlight');
+  el.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+}
+function demoDelay(ms, token) {
+  return new Promise(resolve => {
+    const id = setTimeout(() => { demoTimers.delete(id); resolve(token === demoToken); }, ms);
+    demoTimers.add(id);
+  });
+}
+function cancelDemo() {
+  demoToken++;
+  demoActive = false;
+  for (const id of demoTimers) clearTimeout(id);
+  demoTimers.clear();
+  $('demoBtn')?.setAttribute('aria-pressed', 'false');
+  hideDemoCaption({ clearHighlights: true });
+}
+function applyDemoSettings() {
+  state.scan = 'ripple';
+  state.focus = null;
+  state.mode = '';
+  state.tempo = 80;
+  state.preset = 'piano';
+  state.seed = null;
+  state.hueKey = null;
+  state.ink = [];
+  state.editPlans = [];
+  setScan('ripple');
+  setMode('');
+  tempoSlider.value = '80';
+  $('tempoVal').textContent = '80';
+  document.querySelectorAll('.preset-btn').forEach(b => setPressed(b, b.dataset.preset === 'piano'));
+}
+async function playDemo(token, kick) {
+  const stopResume = () => document.removeEventListener('pointerdown', resume, true);
+  function resume() {
+    if (token !== demoToken) { stopResume(); return; }
+    engine.ensureStarted().then(async () => {
+      if (token !== demoToken || !state.result || $('editDialog')?.open || engine.playing) return;
+      await armAudio();
+      if (token !== demoToken || !state.result || $('editDialog')?.open || engine.playing) return;
+      engine.play(0);
+      creative?.record('playback_started');
+      stopResume();
+    }).catch(() => {});
+  }
+  try {
+    await kick;
+    if (token !== demoToken || !state.result) return;
+    if (window.Tone?.context?.state !== 'running') {
+      document.addEventListener('pointerdown', resume, true);
+      return;
+    }
+    await armAudio();
+    if (token === demoToken) setStatus(DEMO_BEATS[0]);
+    if (token !== demoToken || !state.result || engine.playing) return;
+    engine.play(0);
+    creative?.record('playback_started');
+  } catch { /* 视觉脚本继续；声音等下一次手势 */ }
+}
+async function runDemoTour(token, kick) {
+  demoActive = true;
+  showDemoCaption(0);
+  setStatus(DEMO_BEATS[0]);
+  $('demoBtn')?.setAttribute('aria-pressed', 'true');
+  if (!state.result || state.painting !== DEMO_PAINTING) {
+    demoActive = false;
+    $('demoBtn')?.setAttribute('aria-pressed', 'false');
+    return;
+  }
+  hint.hidden = true;
+  spotlight(document.querySelector('.listen-note'));
+  $('barStory')?.classList.add('demo-highlight');
+  const audio = playDemo(token, kick);
+  if (!await demoDelay(8000, token)) return;
+  await audio;
+  if (token !== demoToken) return;
+  showDemoCaption(1);
+  setStatus(DEMO_BEATS[1]);
+  const chip = document.querySelector('[data-edit="sparser"]');
+  spotlight(document.querySelector('.creative-card'));
+  chip?.classList.add('demo-highlight');
+  if (!await demoDelay(2500, token)) return;
+  if (chip && !chip.disabled && !$('editDialog')?.open) chip.click();
+  if (!await demoDelay(400, token)) return;
+  showDemoCaption(1);
+  const dialog = $('editDialog');
+  if (dialog?.open) {
+    let touched = false;
+    const mark = () => { touched = true; };
+    ['listenBefore', 'listenAfter', 'editPreviewStop', 'acceptEdit', 'discardEdit'].forEach(id => $(id)?.addEventListener('click', mark, { once: true }));
+    const closed = new Promise(resolve => dialog.addEventListener('close', () => resolve('closed'), { once: true }));
+    const why = await Promise.race([closed, demoDelay(11000, token).then(alive => alive ? 'timeout' : 'cancelled')]);
+    if (token !== demoToken || why === 'cancelled') return;
+    if (why === 'timeout' && dialog.open && !touched) dialog.close();
+    else if (dialog.open) await closed;
+    if (token !== demoToken) return;
+  }
+  showDemoCaption(2);
+  setStatus(DEMO_BEATS[2]);
+  spotlight($('takeaway'));
+  $('exportAudioBtn')?.classList.add('demo-highlight');
+  demoActive = false;
+  $('demoBtn')?.setAttribute('aria-pressed', 'false');
+}
+async function beginDemo() {
+  const token = ++demoToken;
+  captionDismissed = false;
+  for (const id of demoTimers) clearTimeout(id);
+  demoTimers.clear();
+  demoActive = true;
+  showDemoCaption(0);
+  setStatus(DEMO_BEATS[0]);
+  $('demoBtn')?.setAttribute('aria-pressed', 'true');
+  const kick = engine.ensureStarted().catch(() => {});
+  applyDemoSettings();
+  const loaded = await selectPainting(DEMO_PAINTING, false);
+  if (token !== demoToken || !loaded) {
+    if (token === demoToken) { demoActive = false; $('demoBtn')?.setAttribute('aria-pressed', 'false'); }
+    return;
+  }
+  if (renderTimer) doRender();
+  await runDemoTour(token, kick);
+}
+$('demoBtn')?.addEventListener('click', () => { beginDemo(); });
+$('demoCaptionClose')?.addEventListener('click', () => { captionDismissed = true; hideDemoCaption(); });
+document.addEventListener('click', event => {
+  if (!demoActive) return;
+  if (event.target.closest('#demoBtn, #demoCaption, #playBtn, #stopBtn, #muteBtn, #editDialog, [data-edit="sparser"]')) return;
+  cancelDemo();
+}, true);
+
 // ---------- 启动 ----------
 
 readHash();
+const demoFromQuery = new URLSearchParams(location.search).get('demo') === '1';
+if (demoFromQuery) {
+  state.painting = DEMO_PAINTING;
+  applyDemoSettings();
+  showDemoCaption(0);
+  setStatus(DEMO_BEATS[0]);
+}
 setScan(state.scan);
 setMode(state.mode);
 tempoSlider.value = state.tempo; $('tempoVal').textContent = state.tempo;
 document.querySelectorAll('.preset-btn').forEach(x => setPressed(x, x.dataset.preset === state.preset));
-selectPainting(state.painting || PAINTINGS[0].id, true, state.ink);
+selectPainting(state.painting || PAINTINGS[0].id, true, state.ink).then(loaded => {
+  if (renderTimer) doRender();
+  if (demoFromQuery && loaded && state.painting === DEMO_PAINTING) {
+    runDemoTour(++demoToken, engine.ensureStarted().catch(() => {}));
+  }
+});
 renderSavedWorks();
 schedulePreload();

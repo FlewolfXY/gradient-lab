@@ -1,4 +1,5 @@
 import { normalizeEditPlans } from './creative-edits.js?v=20261003-1';
+import { PITCH_NAMES } from './paint2score.js?v=20261016-1';
 
 // Local-only sketchbook. Keep the payload bounded, validate imported data,
 // and never silently discard an old piece when browser storage is full.
@@ -70,6 +71,7 @@ function cleanWork(work) {
     seed: Number.isFinite(work.seed) ? Math.trunc(work.seed) : null,
     focus: Array.isArray(work.focus) && work.focus.length === 2 && work.focus.every(Number.isFinite)
       ? work.focus.map(n => clamp(n, 0, 1)) : null,
+    hueKey: PITCH_NAMES.includes(work.hueKey) ? work.hueKey : null,
     ink: cleanInk(work.ink),
   };
 }
